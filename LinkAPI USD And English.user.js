@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinkAPI USD And English
 // @namespace    https://violentmonkey.github.io/
-// @version      2.4
+// @version      2.6
 // @description  Replace CNY values with USD and clean up mixed Chinese text on LinkAPI
 // @author       TheLonelyDevil
 // @updateURL    https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translation/main/LinkAPI%20USD%20And%20English.user.js
@@ -19,6 +19,7 @@
 
     const SCRIPT_ID = 'tld-linkapi-cny-usd';
     const STORAGE_KEY = `${SCRIPT_ID}:enabled`;
+    const MODEL_FILTER_STORAGE_KEY = `${SCRIPT_ID}:model-filter`;
     const HELPER_STYLE_ID = `${SCRIPT_ID}-helper-style`;
     const CNY_TO_USD_RATE = 0.146201;
 
@@ -44,7 +45,10 @@
         ['任务日志', 'Task Logs'],
         ['钱包', 'Wallet'],
         ['充值', 'Recharge'],
+        ['平台', 'Platform'],
         ['公告', 'Announcements'],
+        ['平台Announcements', 'Platform Announcements'],
+        ['平台公告', 'Platform Announcements'],
         ['点击查看详情', 'Click For Details'],
         ['暂无数据', 'No Data'],
         ['无数据', 'No Data'],
@@ -188,14 +192,18 @@
         ['关于 Gemini 2.5 Pro Response延迟的说明', 'About Gemini 2.5 Pro Response Latency'],
         ['大家好', 'Hello everyone'],
         ['如果您感觉 Gemini 2.5 Pro 的Response有时较慢', 'If you feel Gemini 2.5 Pro responses are sometimes slow'],
+        ['如果您感觉 Gemini 2.5 Pro 的Response', 'If you feel Gemini 2.5 Pro responses'],
+        ['有时较慢', 'are sometimes slow'],
         ['这是由多个因素共同造成的', 'this is caused by multiple factors'],
         ['高质量的生成确实需要一些Time', 'high-quality generation does require some time'],
         ['物理距离', 'Physical Distance'],
         ['我们的服务器位于美西', 'our servers are in the western United States'],
         ['与国内的数据往返本身存在约3秒的物理网络延迟', 'round trips to domestic networks have about 3 seconds of physical network latency'],
+        ['存在约3秒的物理网络延迟', 'have about 3 seconds of physical network latency'],
         ['Model思考', 'Model Reasoning'],
         ['作为顶级大Model', 'as a top-tier large model'],
         ['处理您的复杂指令需要更充分的计算与思考Time', 'processing complex instructions needs more compute and reasoning time'],
+        ['处理您的复杂指令需要更充分的计算与思考', 'processing complex instructions needs more compute and reasoning'],
         ['综合负载', 'Overall Load'],
         ['高峰期的账号池调度与谷歌服务器的实时负载', 'account pool scheduling during peak times and real-time Google server load'],
         ['也是影响最终速度的重要因素', 'are also important factors affecting final speed'],
@@ -430,7 +438,8 @@
         style.id = HELPER_STYLE_ID;
         style.textContent = `
             .${SCRIPT_ID}-midnight-button,
-            .${SCRIPT_ID}-model-filter {
+            .${SCRIPT_ID}-model-filter,
+            .${SCRIPT_ID}-dialog-model-filter {
                 border: 1px solid rgba(134, 146, 166, 0.36);
                 border-radius: 8px;
                 background: rgba(34, 38, 48, 0.92);
@@ -459,8 +468,40 @@
                 margin: 6px 8px 6px 0;
             }
 
+            .${SCRIPT_ID}-dialog-model-filter-wrap {
+                margin: 12px 0;
+            }
+
+            .${SCRIPT_ID}-dialog-model-filter-label {
+                display: block;
+                margin: 0 0 6px;
+                color: rgb(236, 241, 247);
+                font: 700 13px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            }
+
+            .${SCRIPT_ID}-dialog-model-filter {
+                box-sizing: border-box;
+                width: 100%;
+                height: 34px;
+                padding: 0 11px;
+            }
+
             .${SCRIPT_ID}-hidden-by-model-filter {
                 display: none !important;
+            }
+
+            .${SCRIPT_ID}-api-info-label {
+                margin-left: 5px;
+                color: rgb(210, 218, 230);
+                font-size: 11px;
+                font-weight: 700;
+                line-height: 1;
+                white-space: nowrap;
+            }
+
+            button[data-${SCRIPT_ID}-api-info-button="true"] {
+                min-width: 66px;
+                gap: 4px;
             }
 
             [data-${SCRIPT_ID}-redeem="true"] {
@@ -551,9 +592,20 @@
         });
     }
 
-    function applyModelFilter(input) {
+    function getModelFilterTargets(scope) {
+        return Array.from(scope.querySelectorAll('[data-model], [data-model-name], [data-row-key], tbody tr, [role="row"], article, li')).filter((row) => {
+            if (row.closest('table') && /api key|quota|group|enabled|auto/i.test(row.closest('table').textContent || '')) {
+                return false;
+            }
+
+            const text = normalizeWhitespace(row.textContent || '');
+            return text.length > 0 && /model|token|claude|gemini|gpt|deepseek|codex|llama|qwen|mistral|api/i.test(text);
+        });
+    }
+
+    function applyModelFilter(input, scope = null) {
         const query = normalizeInputValue(input.value);
-        const rows = getRowsNear(input);
+        const rows = scope ? getRowsNear(scope) : getRowsNear(input);
 
         rows.forEach((row) => {
             if (!query || normalizeInputValue(row.textContent).includes(query)) {
@@ -562,6 +614,65 @@
                 row.classList.add(`${SCRIPT_ID}-hidden-by-model-filter`);
             }
         });
+    }
+
+    function applyStoredModelFilter() {
+        const query = localStorage.getItem(MODEL_FILTER_STORAGE_KEY) || '';
+        if (!query) {
+            return;
+        }
+
+        const syntheticInput = { value: query };
+        for (const scope of document.querySelectorAll('main, [role="dialog"], section')) {
+            const text = normalizeInputValue(scope.textContent);
+            if (/(usage logs|task logs|dashboard|filter dashboard models)/.test(text) && !/api keys/.test(text)) {
+                const targets = getModelFilterTargets(scope);
+                targets.forEach((row) => {
+                    if (!query || normalizeInputValue(row.textContent).includes(normalizeInputValue(query))) {
+                        row.classList.remove(`${SCRIPT_ID}-hidden-by-model-filter`);
+                    } else {
+                        row.classList.add(`${SCRIPT_ID}-hidden-by-model-filter`);
+                    }
+                });
+            }
+        }
+    }
+
+    function enhanceDashboardModelFilterDialog() {
+        const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [data-state="open"]')).filter((dialog) => /filter dashboard models|chart settings|quick range|time granularity/i.test(dialog.textContent || ''));
+
+        for (const dialog of dialogs) {
+            if (dialog.querySelector(`.${SCRIPT_ID}-dialog-model-filter`)) {
+                continue;
+            }
+
+            const wrapper = document.createElement('label');
+            wrapper.className = `${SCRIPT_ID}-dialog-model-filter-wrap`;
+
+            const label = document.createElement('span');
+            label.className = `${SCRIPT_ID}-dialog-model-filter-label`;
+            label.textContent = 'Model Filter';
+
+            const input = document.createElement('input');
+            input.type = 'search';
+            input.className = `${SCRIPT_ID}-dialog-model-filter`;
+            input.placeholder = 'String match loaded models, groups, or tags';
+            input.value = localStorage.getItem(MODEL_FILTER_STORAGE_KEY) || '';
+            input.addEventListener('input', () => {
+                localStorage.setItem(MODEL_FILTER_STORAGE_KEY, input.value);
+                applyStoredModelFilter();
+            });
+
+            wrapper.append(label, input);
+
+            const chartSettings = Array.from(dialog.querySelectorAll('*')).find((element) => normalizeWhitespace(element.textContent || '').toLowerCase() === 'chart settings');
+            if (chartSettings) {
+                chartSettings.insertAdjacentElement('afterend', wrapper);
+            } else {
+                const insertionPoint = dialog.querySelector('form') || dialog;
+                insertionPoint.appendChild(wrapper);
+            }
+        }
     }
 
     function enhanceModelFilters() {
@@ -653,6 +764,44 @@
         }
     }
 
+    function enhanceApiInfoButtons() {
+        const apiInfoBlocks = Array.from(document.querySelectorAll('section, article, main, [role="region"], div')).filter((element) => {
+            const text = normalizeWhitespace(element.textContent || '').toLowerCase();
+            return text.includes('api info') && text.includes('https://');
+        });
+
+        for (const block of apiInfoBlocks.slice(0, 2)) {
+            const rows = Array.from(block.querySelectorAll('div, li, article')).filter((row) => {
+                const text = normalizeWhitespace(row.textContent || '');
+                return /^https:\/\/|https:\/\/(?:api|hk|jp|linkapi)/i.test(text) || /https:\/\/(?:api|hk|jp|linkapi)/i.test(text);
+            });
+
+            for (const row of rows) {
+                const buttons = Array.from(row.querySelectorAll('button, a[role="button"]')).filter((button) => {
+                    return !button.getAttribute(`data-${SCRIPT_ID}-api-info-button`);
+                });
+
+                const labels = ['Latency', 'Speed', 'Copy', 'Open'];
+
+                buttons.slice(-4).forEach((button, index) => {
+                    const existingText = normalizeWhitespace(button.textContent || '');
+                    if (existingText && labels.some((label) => existingText.toLowerCase().includes(label.toLowerCase()))) {
+                        return;
+                    }
+
+                    button.setAttribute(`data-${SCRIPT_ID}-api-info-button`, 'true');
+                    button.title = button.title || labels[index];
+                    button.setAttribute('aria-label', button.getAttribute('aria-label') || labels[index]);
+
+                    const label = document.createElement('span');
+                    label.className = `${SCRIPT_ID}-api-info-label`;
+                    label.textContent = labels[index];
+                    button.appendChild(label);
+                });
+            }
+        }
+    }
+
     function rememberApiKeySortTable(event) {
         const header = event.target.closest?.('th');
         if (!header || !normalizeWhitespace(header.textContent || '').toLowerCase().includes('group')) {
@@ -667,7 +816,7 @@
 
     function handleNativeSortMenu(event) {
         const item = event.target.closest?.('[role="menuitem"], [cmdk-item], button, div');
-        if (!item || !apiKeySortTable) {
+        if (!item) {
             return;
         }
 
@@ -676,7 +825,11 @@
             return;
         }
 
-        const table = apiKeySortTable;
+        const table = getApiKeyTables()[0] || apiKeySortTable;
+        if (!table) {
+            return;
+        }
+
         setTimeout(() => sortApiKeyRows(table, label === 'asc'), 0);
     }
 
@@ -684,8 +837,10 @@
         installHelperStyles();
         enhanceRedemptionInput();
         enhanceTimeInputs();
-        enhanceModelFilters();
+        enhanceDashboardModelFilterDialog();
         enhanceApiKeySorting();
+        enhanceApiInfoButtons();
+        applyStoredModelFilter();
     }
 
     function queueEnhancements() {
