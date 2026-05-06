@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinkAPI USD And English
 // @namespace    https://violentmonkey.github.io/
-// @version      2.1
+// @version      2.2
 // @description  Replace CNY values with USD and clean up mixed Chinese text on LinkAPI
 // @author       TheLonelyDevil
 // @updateURL    https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translation/main/LinkAPI%20USD%20And%20English.user.js
@@ -19,11 +19,13 @@
 
     const SCRIPT_ID = 'tld-linkapi-cny-usd';
     const STORAGE_KEY = `${SCRIPT_ID}:enabled`;
+    const HELPER_STYLE_ID = `${SCRIPT_ID}-helper-style`;
     const CNY_TO_USD_RATE = 0.146201;
 
     const PREFIX_CNY_PATTERN = /(?<![\w$])(?:CNY|RMB|CN¥|CN￥|¥|￥|人民币)\s*([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)(?!\s*(?:CNY|RMB|元)?\s*\))/gi;
     const SUFFIX_CNY_PATTERN = /(?<![\w$])([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?:CNY|RMB|人民币|元)(?!\s*\))/gi;
     const CNY_UNIT_LABEL_PATTERN = /\((?:CNY|RMB)\)/gi;
+    const COPYRIGHT_YEAR_PATTERN = /©\s*2025(?=\s*LinkAPI)/g;
     const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'INPUT', 'SELECT', 'OPTION', 'CODE', 'PRE']);
     const HAS_CJK_PATTERN = /[\u3400-\u9fff]/;
     const BILINGUAL_SEPARATOR_PATTERN = /\s*(?:\/|／|\||｜)\s*/;
@@ -138,12 +140,53 @@
         ['暂无可用渠道', 'No Available Channels'],
         ['无描述', 'No Description'],
         ['暂无描述', 'No Description'],
-        ['未配置运行时间监控', 'No Uptime Monitoring Configured']
+        ['未配置运行时间监控', 'No Uptime Monitoring Configured'],
+        ['Gemini已经恢复稳定Status', 'Gemini Has Returned To Stable Status'],
+        ['尊敬的客户', 'Dear customers'],
+        ['由于数据中心对于开源Model的计算能力费用持续上涨', 'Due to the data center compute costs for open source models continuing to rise'],
+        ['我们预计在合同结束后', 'After the contract ends, we expect'],
+        ['将从平台上移除一批开源Model', 'to remove a batch of open source models from the platform'],
+        ['因为连续两周每周Price上涨10%', 'Because prices have increased 10% each week for two consecutive weeks'],
+        ['我们确实无法再继续支持这些Model', 'we can no longer continue supporting these models'],
+        ['待批量前通知', 'We will notify you before batch removal'],
+        ['感谢您的理解', 'Thank you for your understanding'],
+        ['各个Group进行陆续的Price上调', 'Each group will receive gradual price increases'],
+        ['预通知', 'Advance Notice'],
+        ['市场降价后会第一Time降价', 'Prices will be lowered immediately after the market price drops'],
+        ['因为只剩4.6系列了', 'because only the 4.6 series remains'],
+        ['我会对claudecheapGroup和claude的-r降价处理', 'I will reduce pricing for the claudecheap group and Claude -r'],
+        ['稳定可用性只能尽力维持', 'stability and availability can only be maintained as best as possible'],
+        ['Gemini Model报错说明', 'Gemini Model Error Explanation'],
+        ['如果您看到报错', 'If you see the error'],
+        ['Request被GeminiAPI阻止-禁止内容', 'Request blocked by Gemini API: prohibited content'],
+        ['或遇到', 'or encounter'],
+        ['这明确表示您的Input内容触发了谷歌官方的严格审核', 'this clearly means your input triggered Google official strict review'],
+        ['解决方案', 'Solution'],
+        ['请检查并调整您的提示词或对话切入点', 'check and adjust your prompt or conversation entry point'],
+        ['即可绕过审核', 'to pass the review'],
+        ['关于 Gemini 2.5 Pro Response延迟的说明', 'About Gemini 2.5 Pro Response Latency'],
+        ['大家好', 'Hello everyone'],
+        ['如果您感觉 Gemini 2.5 Pro 的Response有时较慢', 'If you feel Gemini 2.5 Pro responses are sometimes slow'],
+        ['这是由多个因素共同造成的', 'this is caused by multiple factors'],
+        ['高质量的生成确实需要一些Time', 'high-quality generation does require some time'],
+        ['物理距离', 'Physical Distance'],
+        ['我们的服务器位于美西', 'our servers are in the western United States'],
+        ['与国内的数据往返本身存在约3秒的物理网络延迟', 'round trips to domestic networks have about 3 seconds of physical network latency'],
+        ['Model思考', 'Model Reasoning'],
+        ['作为顶级大Model', 'as a top-tier large model'],
+        ['处理您的复杂指令需要更充分的计算与思考Time', 'processing complex instructions needs more compute and reasoning time'],
+        ['综合负载', 'Overall Load'],
+        ['高峰期的账号池调度与谷歌服务器的实时负载', 'account pool scheduling during peak times and real-time Google server load'],
+        ['也是影响最终速度的重要因素', 'are also important factors affecting final speed'],
+        ['我们理解您对速度的期待', 'We understand your expectations for speed'],
+        ['也感谢您的耐心', 'and appreciate your patience'],
+        ['高质量的回复值得片刻等待', 'high-quality replies are worth a short wait']
     ]);
 
     let enabled = localStorage.getItem(STORAGE_KEY) !== 'false';
     let observer = null;
     let queued = false;
+    let enhancementQueued = false;
     let toggleButton = null;
 
     function toNumber(rawAmount) {
@@ -152,13 +195,12 @@
 
     function formatUsd(cnyValue) {
         const usdValue = cnyValue * CNY_TO_USD_RATE;
-        const fractionDigits = Math.abs(usdValue) < 0.01 && usdValue !== 0 ? 4 : 2;
 
         return new Intl.NumberFormat('en-US', {
             style: 'currency',
             currency: 'USD',
-            minimumFractionDigits: fractionDigits,
-            maximumFractionDigits: fractionDigits
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
         }).format(usdValue);
     }
 
@@ -209,7 +251,7 @@
             nextText = nextText.replaceAll(source, target);
         }
 
-        return nextText;
+        return nextText.replace(/。/g, '.').replace(/，/g, ', ');
     }
 
     function convertText(text) {
@@ -225,7 +267,8 @@
         const convertedCurrencyText = text
             .replace(PREFIX_CNY_PATTERN, replaceAmount)
             .replace(SUFFIX_CNY_PATTERN, replaceAmount)
-            .replace(CNY_UNIT_LABEL_PATTERN, '(USD)');
+            .replace(CNY_UNIT_LABEL_PATTERN, '(USD)')
+            .replace(COPYRIGHT_YEAR_PATTERN, '© 2026');
 
         return translateChineseText(convertedCurrencyText);
     }
@@ -311,6 +354,7 @@
             queued = false;
             processRoot(root);
             processAccessibleFrames();
+            queueEnhancements();
         });
     }
 
@@ -329,6 +373,254 @@
             if (frameDocument?.body) {
                 processRoot(frameDocument.body);
             }
+        });
+    }
+
+    function installHelperStyles() {
+        if (document.getElementById(HELPER_STYLE_ID)) {
+            return;
+        }
+
+        const style = document.createElement('style');
+        style.id = HELPER_STYLE_ID;
+        style.textContent = `
+            .${SCRIPT_ID}-midnight-button,
+            .${SCRIPT_ID}-model-filter {
+                border: 1px solid rgba(134, 146, 166, 0.36);
+                border-radius: 8px;
+                background: rgba(34, 38, 48, 0.92);
+                color: rgb(236, 241, 247);
+                font: 700 12px/1.1 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                letter-spacing: 0;
+                min-height: 28px;
+            }
+
+            .${SCRIPT_ID}-midnight-button {
+                cursor: pointer;
+                padding: 0 10px;
+                margin-left: 6px;
+                white-space: nowrap;
+            }
+
+            .${SCRIPT_ID}-midnight-button:hover,
+            .${SCRIPT_ID}-midnight-button:focus-visible {
+                border-color: rgba(56, 189, 248, 0.72);
+                color: rgb(240, 249, 255);
+            }
+
+            .${SCRIPT_ID}-model-filter {
+                width: min(240px, 100%);
+                padding: 0 10px;
+                margin: 6px 8px 6px 0;
+            }
+
+            .${SCRIPT_ID}-hidden-by-model-filter {
+                display: none !important;
+            }
+
+            [data-${SCRIPT_ID}-redeem="true"] {
+                max-width: 560px !important;
+            }
+
+            [data-${SCRIPT_ID}-redeem-wrap="true"] {
+                align-items: flex-start !important;
+            }
+        `;
+
+        document.documentElement.appendChild(style);
+    }
+
+    function findInputs() {
+        return Array.from(document.querySelectorAll('input')).filter((input) => {
+            if (input.type === 'hidden' || input.disabled) {
+                return false;
+            }
+
+            return input.offsetParent !== null || input.getClientRects().length > 0 || document.body.contains(input);
+        });
+    }
+
+    function normalizeInputValue(value) {
+        return String(value || '').toLowerCase().trim();
+    }
+
+    function enhanceRedemptionInput() {
+        for (const input of findInputs()) {
+            const placeholder = normalizeInputValue(input.placeholder);
+            if (!placeholder.includes('redemption code')) {
+                continue;
+            }
+
+            input.placeholder = 'Enter your redemption code here';
+            input.setAttribute(`data-${SCRIPT_ID}-redeem`, 'true');
+            const wrapper = input.closest('div');
+            if (wrapper) {
+                wrapper.setAttribute(`data-${SCRIPT_ID}-redeem-wrap`, 'true');
+            }
+        }
+    }
+
+    function setInputValue(input, value) {
+        const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+        if (nativeSetter) {
+            nativeSetter.call(input, value);
+        } else {
+            input.value = value;
+        }
+
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    function enhanceTimeInputs() {
+        for (const input of findInputs()) {
+            const value = normalizeInputValue(input.value);
+            const placeholder = normalizeInputValue(input.placeholder);
+            const isTimeInput = input.type === 'time' || /\d{1,2}\s*:\s*\d{2}(?:\s*[ap]m)?/i.test(value) || placeholder.includes('time');
+
+            if (!isTimeInput || input.getAttribute(`data-${SCRIPT_ID}-midnight-bound`) === 'true') {
+                continue;
+            }
+
+            input.setAttribute(`data-${SCRIPT_ID}-midnight-bound`, 'true');
+
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = `${SCRIPT_ID}-midnight-button`;
+            button.textContent = '00:00';
+            button.title = 'Set this time to 00:00:00';
+            button.addEventListener('click', () => {
+                const midnightValue = input.type === 'time' ? '00:00:00' : '00 : 00 AM';
+                setInputValue(input, midnightValue);
+            });
+
+            input.insertAdjacentElement('afterend', button);
+        }
+    }
+
+    function getRowsNear(element) {
+        const scope = element.closest('main, [role="dialog"], section, article, body') || document.body;
+        return Array.from(scope.querySelectorAll('tbody tr, [role="row"], li, article')).filter((row) => {
+            const text = normalizeWhitespace(row.textContent || '');
+            return text.length > 0 && /model|token|group|claude|gemini|gpt|deepseek|codex|api|sk-/i.test(text);
+        });
+    }
+
+    function applyModelFilter(input) {
+        const query = normalizeInputValue(input.value);
+        const rows = getRowsNear(input);
+
+        rows.forEach((row) => {
+            if (!query || normalizeInputValue(row.textContent).includes(query)) {
+                row.classList.remove(`${SCRIPT_ID}-hidden-by-model-filter`);
+            } else {
+                row.classList.add(`${SCRIPT_ID}-hidden-by-model-filter`);
+            }
+        });
+    }
+
+    function enhanceModelFilters() {
+        const anchors = Array.from(document.querySelectorAll('main, [role="dialog"], section')).filter((element) => {
+            const text = normalizeInputValue(element.textContent);
+            return /(usage logs|task logs|model|token|api keys|filter)/.test(text) && getRowsNear(element).length >= 3;
+        });
+
+        for (const anchor of anchors.slice(0, 3)) {
+            if (anchor.querySelector(`.${SCRIPT_ID}-model-filter`)) {
+                continue;
+            }
+
+            const input = document.createElement('input');
+            input.type = 'search';
+            input.className = `${SCRIPT_ID}-model-filter`;
+            input.placeholder = 'Filter loaded models, groups, or tokens';
+            input.addEventListener('input', () => applyModelFilter(input));
+
+            const insertionPoint = anchor.querySelector('input, button, table, [role="table"]') || anchor.firstElementChild;
+            if (insertionPoint) {
+                insertionPoint.insertAdjacentElement('beforebegin', input);
+            } else {
+                anchor.prepend(input);
+            }
+        }
+    }
+
+    function ratioRank(text) {
+        if (/auto/i.test(text)) {
+            return { isAuto: true, value: 0 };
+        }
+
+        const ratios = Array.from(text.matchAll(/([0-9]+(?:\.[0-9]+)?)\s*[x×]/gi)).map((match) => Number(match[1]));
+        if (ratios.length === 0) {
+            return { isAuto: false, value: Number.POSITIVE_INFINITY };
+        }
+
+        return { isAuto: false, value: Math.min(...ratios) };
+    }
+
+    function enhanceApiKeySorting() {
+        const tables = Array.from(document.querySelectorAll('table')).filter((table) => /api key|quota|group|enabled|auto/i.test(table.textContent || ''));
+
+        for (const table of tables) {
+            if (table.getAttribute(`data-${SCRIPT_ID}-api-sort`) === 'true') {
+                continue;
+            }
+
+            const headers = Array.from(table.querySelectorAll('th'));
+            const groupHeader = headers.find((header) => normalizeWhitespace(header.textContent || '').toLowerCase().includes('group'));
+            const tbody = table.querySelector('tbody');
+
+            if (!groupHeader || !tbody) {
+                continue;
+            }
+
+            table.setAttribute(`data-${SCRIPT_ID}-api-sort`, 'true');
+            groupHeader.style.cursor = 'pointer';
+            groupHeader.title = 'Sort groups by cost ratio, with Auto first in ascending and last in descending';
+            groupHeader.addEventListener('click', () => {
+                const ascending = table.getAttribute(`data-${SCRIPT_ID}-api-sort-dir`) !== 'asc';
+                const rows = Array.from(tbody.querySelectorAll('tr'));
+                const groupColumnIndex = Math.max(headers.indexOf(groupHeader), 0);
+
+                rows.sort((left, right) => {
+                    const leftRank = ratioRank(left.children[groupColumnIndex]?.textContent || left.textContent || '');
+                    const rightRank = ratioRank(right.children[groupColumnIndex]?.textContent || right.textContent || '');
+
+                    if (leftRank.isAuto || rightRank.isAuto) {
+                        if (leftRank.isAuto && rightRank.isAuto) {
+                            return 0;
+                        }
+
+                        return ascending ? (leftRank.isAuto ? -1 : 1) : (leftRank.isAuto ? 1 : -1);
+                    }
+
+                    const diff = leftRank.value - rightRank.value;
+                    return ascending ? diff : -diff;
+                });
+
+                table.setAttribute(`data-${SCRIPT_ID}-api-sort-dir`, ascending ? 'asc' : 'desc');
+                rows.forEach((row) => tbody.appendChild(row));
+            });
+        }
+    }
+
+    function enhancePage() {
+        installHelperStyles();
+        enhanceRedemptionInput();
+        enhanceTimeInputs();
+        enhanceModelFilters();
+        enhanceApiKeySorting();
+    }
+
+    function queueEnhancements() {
+        if (enhancementQueued) {
+            return;
+        }
+
+        enhancementQueued = true;
+        requestAnimationFrame(() => {
+            enhancementQueued = false;
+            enhancePage();
         });
     }
 
@@ -455,6 +747,7 @@
                     }
 
                     processRoot(node);
+                    queueEnhancements();
                 }
             }
         });
@@ -471,6 +764,7 @@
         installObserver();
         processRoot();
         processAccessibleFrames();
+        enhancePage();
     }
 
     if (document.readyState === 'loading') {
