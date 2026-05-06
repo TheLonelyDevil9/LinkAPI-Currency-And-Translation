@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinkAPI USD And English
 // @namespace    https://violentmonkey.github.io/
-// @version      2.2
+// @version      2.3
 // @description  Replace CNY values with USD and clean up mixed Chinese text on LinkAPI
 // @author       TheLonelyDevil
 // @updateURL    https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translation/main/LinkAPI%20USD%20And%20English.user.js
@@ -151,6 +151,8 @@
         ['待批量前通知', 'We will notify you before batch removal'],
         ['感谢您的理解', 'Thank you for your understanding'],
         ['各个Group进行陆续的Price上调', 'Each group will receive gradual price increases'],
+        ['Gemini分组升至', 'Gemini group increased to '],
+        ['分组升至', 'group increased to '],
         ['预通知', 'Advance Notice'],
         ['市场降价后会第一Time降价', 'Prices will be lowered immediately after the market price drops'],
         ['因为只剩4.6系列了', 'because only the 4.6 series remains'],
@@ -222,7 +224,14 @@
         const parts = text.trim().split(BILINGUAL_SEPARATOR_PATTERN).map((part) => part.trim()).filter(Boolean);
         const englishParts = parts.filter((part) => !HAS_CJK_PATTERN.test(part) && looksLikeEnglish(part));
 
-        if (englishParts.length === 0) {
+        if (parts.length < 2 || englishParts.length === 0) {
+            return text;
+        }
+
+        const firstPartHasCjk = HAS_CJK_PATTERN.test(parts[0]);
+        const englishWordCount = englishParts.join(' ').split(/\s+/).filter((word) => /[A-Za-z]{2,}/.test(word)).length;
+
+        if (!firstPartHasCjk || englishWordCount < 2) {
             return text;
         }
 
@@ -247,7 +256,9 @@
             return `${leading}${TRANSLATIONS.get(compactText)}${trailing}`;
         }
 
-        for (const [source, target] of TRANSLATIONS) {
+        const sortedTranslations = Array.from(TRANSLATIONS).sort((left, right) => right[0].length - left[0].length);
+
+        for (const [source, target] of sortedTranslations) {
             nextText = nextText.replaceAll(source, target);
         }
 
