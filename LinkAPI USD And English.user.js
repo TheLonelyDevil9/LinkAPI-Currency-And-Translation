@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinkAPI USD And English
 // @namespace    https://violentmonkey.github.io/
-// @version      2.8
+// @version      2.9
 // @description  Replace CNY values with USD and clean up mixed Chinese text on LinkAPI
 // @author       TheLonelyDevil
 // @updateURL    https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translation/main/LinkAPI%20USD%20And%20English.user.js
@@ -233,12 +233,16 @@
 
     function formatUsd(cnyValue) {
         const usdValue = cnyValue * CNY_TO_USD_RATE;
+        const absUsdValue = Math.abs(usdValue);
+        const maximumFractionDigits = absUsdValue > 0 && absUsdValue < 0.01
+            ? Math.min(Math.max(Math.ceil(-Math.log10(absUsdValue)) + 2, 6), 8)
+            : 2;
 
         return new Intl.NumberFormat('en-US', {
             style: 'currency',
             currency: 'USD',
             minimumFractionDigits: 2,
-            maximumFractionDigits: 2
+            maximumFractionDigits
         }).format(usdValue);
     }
 
@@ -924,10 +928,30 @@
             document.querySelectorAll(selector).forEach((element) => candidates.add(element));
         });
 
-        document.querySelectorAll('button, a').forEach((element) => {
+        const getAvoidanceTarget = (element) => {
+            const semanticParent = element.closest('nav[aria-label*="pagination" i], [data-slot="pagination"], [class*="pagination" i], [role="navigation"]');
+            if (semanticParent) {
+                return semanticParent;
+            }
+
+            const parent = element.parentElement;
+            if (!parent) {
+                return element;
+            }
+
+            const parentRect = parent.getBoundingClientRect();
+            return parentRect.width > 0 && parentRect.width <= 420 && parentRect.height > 0 && parentRect.height <= 96
+                ? parent
+                : element;
+        };
+
+        document.querySelectorAll('button, a, [role="button"], [role="link"], [tabindex]:not([tabindex="-1"])').forEach((element) => {
             const label = normalizeWhitespace(element.textContent || element.getAttribute('aria-label') || '');
-            if (/^(?:\d+|\.{3}|<<|>>|<|>|previous|next)$/i.test(label)) {
-                candidates.add(element.closest('nav, [role="navigation"], [class*="pagination" i], div') || element);
+            const isPagerControl = /^(?:\d+|\.{3}|<<|>>|<|>|previous|next)$/i.test(label)
+                || element.closest('nav[aria-label*="pagination" i], [data-slot="pagination"], [class*="pagination" i], [role="navigation"]');
+
+            if (isPagerControl || element.querySelector('svg')) {
+                candidates.add(getAvoidanceTarget(element));
             }
         });
 
@@ -937,7 +961,7 @@
             }
 
             const rect = element.getBoundingClientRect();
-            return rect.width > 0 && rect.height > 0 && rect.bottom > window.innerHeight * 0.55 && rect.right > window.innerWidth * 0.35;
+            return rect.width > 0 && rect.height > 0 && rect.bottom > window.innerHeight * 0.55;
         });
     }
 
@@ -961,7 +985,8 @@
             }
         });
 
-        toggleButton.style.setProperty('--tld-linkapi-toggle-bottom', `${Math.min(bottomOffset, 148)}px`);
+        const maxBottomOffset = Math.max(safeBottom, Math.min(window.innerHeight - (toggleRect.height || 38) - 16, 220));
+        toggleButton.style.setProperty('--tld-linkapi-toggle-bottom', `${Math.min(bottomOffset, maxBottomOffset)}px`);
     }
 
     function queueTogglePosition() {

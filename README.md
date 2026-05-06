@@ -8,7 +8,7 @@ https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translati
 
 ## Features
 
-- Converts visible CNY/RMB/yuan values to USD with comma grouping and two decimal places.
+- Converts visible CNY/RMB/yuan values to USD with comma grouping, using extra decimals for nonzero sub-cent amounts.
 - Adds a floating `USD + EN` / `Original` toggle.
 - Watches dynamic page updates, including logs, modals, dashboard cards, and announcements.
 - Cleans mixed Chinese/English LinkAPI UI text with a local glossary.
