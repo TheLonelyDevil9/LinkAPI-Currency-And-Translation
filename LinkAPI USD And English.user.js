@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinkAPI USD And English
 // @namespace    https://violentmonkey.github.io/
-// @version      2.3
+// @version      2.4
 // @description  Replace CNY values with USD and clean up mixed Chinese text on LinkAPI
 // @author       TheLonelyDevil
 // @updateURL    https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translation/main/LinkAPI%20USD%20And%20English.user.js
@@ -128,7 +128,24 @@
         ['注册问题', 'Registration Issues'],
         ['充值问题', 'Recharge Issues'],
         ['手机点充值无反应', 'Recharge Button Does Not Respond On Mobile'],
+        ['看不到邮箱框？', 'Can not see the email field?'],
+        ['请先Refresh', 'refresh first'],
+        ['无效则换浏览器', 'if that does not work, switch browsers'],
+        ['建议使用手机自带浏览器', 'try using your phone built-in browser'],
+        ['避开夸克', 'avoid Quark Browser'],
+        ['百度浏览器', 'Baidu Browser'],
+        ['或联系客服', 'or contact support'],
         ['建议使用手', 'Try Using A Desktop Browser'],
+        ['Model配额临时不足通知', 'Temporary Model Quota Shortage Notice'],
+        ['亲爱的用户', 'Dear users'],
+        ['系列Model因官方配额紧张', 'series models have tight official quota'],
+        ['官方配额紧张', 'official quota is tight'],
+        ['高峰期可能会遇到报错', 'errors may occur during peak hours'],
+        ['此为正常现象', 'this is normal'],
+        ['请大家谅\"解', 'please understand'],
+        ['请大家谅解', 'please understand'],
+        ['可尝试更换其他Model使用', 'try switching to another model'],
+        ['Flash / Flash-Lite 系列Model因官方配额紧张', 'Flash / Flash-Lite series models have tight official quota'],
         ['令牌管理->聊天->▽，支持 CC Switch/Cherry Studio 一键导入', 'API Keys -> Chat -> Dropdown Supports One-Click Import For CC Switch/Cherry Studio'],
         ['绘图模型调整', 'Image Model Adjustment'],
         ['对话用户切勿使用', 'Chat Users Should Not Use It'],
@@ -160,10 +177,12 @@
         ['稳定可用性只能尽力维持', 'stability and availability can only be maintained as best as possible'],
         ['Gemini Model报错说明', 'Gemini Model Error Explanation'],
         ['如果您看到报错', 'If you see the error'],
+        ['Request被GeminiAPI阻止:禁止内容', 'Request blocked by Gemini API: prohibited content'],
         ['Request被GeminiAPI阻止-禁止内容', 'Request blocked by Gemini API: prohibited content'],
         ['或遇到', 'or encounter'],
         ['这明确表示您的Input内容触发了谷歌官方的严格审核', 'this clearly means your input triggered Google official strict review'],
         ['解决方案', 'Solution'],
+        ['Solution：请检查并调整您的提示词或对话切入点', 'Solution: check and adjust your prompt or conversation entry point'],
         ['请检查并调整您的提示词或对话切入点', 'check and adjust your prompt or conversation entry point'],
         ['即可绕过审核', 'to pass the review'],
         ['关于 Gemini 2.5 Pro Response延迟的说明', 'About Gemini 2.5 Pro Response Latency'],
@@ -189,6 +208,7 @@
     let observer = null;
     let queued = false;
     let enhancementQueued = false;
+    let apiKeySortTable = null;
     let toggleButton = null;
 
     function toNumber(rawAmount) {
@@ -262,7 +282,21 @@
             nextText = nextText.replaceAll(source, target);
         }
 
-        return nextText.replace(/。/g, '.').replace(/，/g, ', ');
+        return nextText
+            .replace(/。/g, '.')
+            .replace(/，/g, ', ')
+            .replace(/？/g, '?')
+            .replace(/！/g, '!')
+            .replace(/：/g, ': ')
+            .replace(/「/g, '"')
+            .replace(/」/g, '"')
+            .replace(/\s+([,.:;!?])/g, '$1')
+            .replace(/([,.:;!?])(?=\S)(?!\d)/g, '$1 ')
+            .replace(/(?<!\s)"(?=\S)/g, ' "')
+            .replace(/"(?=\S)/g, '" ')
+            .replace(/"\s+([^"]*?)\s+"/g, '"$1"')
+            .replace(/\s+([,.:;!?])/g, '$1')
+            .replace(/\s{2,}/g, ' ');
     }
 
     function convertText(text) {
@@ -569,50 +603,81 @@
         return { isAuto: false, value: Math.min(...ratios) };
     }
 
-    function enhanceApiKeySorting() {
-        const tables = Array.from(document.querySelectorAll('table')).filter((table) => /api key|quota|group|enabled|auto/i.test(table.textContent || ''));
+    function sortApiKeyRows(table, ascending) {
+        const headers = Array.from(table.querySelectorAll('th'));
+        const groupHeader = headers.find((header) => normalizeWhitespace(header.textContent || '').toLowerCase().includes('group'));
+        const tbody = table.querySelector('tbody');
 
-        for (const table of tables) {
-            if (table.getAttribute(`data-${SCRIPT_ID}-api-sort`) === 'true') {
-                continue;
+        if (!groupHeader || !tbody) {
+            return;
+        }
+
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+        const groupColumnIndex = Math.max(headers.indexOf(groupHeader), 0);
+
+        rows.sort((left, right) => {
+            const leftRank = ratioRank(left.children[groupColumnIndex]?.textContent || left.textContent || '');
+            const rightRank = ratioRank(right.children[groupColumnIndex]?.textContent || right.textContent || '');
+
+            if (leftRank.isAuto || rightRank.isAuto) {
+                if (leftRank.isAuto && rightRank.isAuto) {
+                    return 0;
+                }
+
+                return ascending ? (leftRank.isAuto ? -1 : 1) : (leftRank.isAuto ? 1 : -1);
             }
 
+            const diff = leftRank.value - rightRank.value;
+            return ascending ? diff : -diff;
+        });
+
+        table.setAttribute(`data-${SCRIPT_ID}-api-sort-dir`, ascending ? 'asc' : 'desc');
+        rows.forEach((row) => tbody.appendChild(row));
+    }
+
+    function getApiKeyTables() {
+        return Array.from(document.querySelectorAll('table')).filter((table) => /api key|quota|group|enabled|auto/i.test(table.textContent || ''));
+    }
+
+    function enhanceApiKeySorting() {
+        for (const table of getApiKeyTables()) {
             const headers = Array.from(table.querySelectorAll('th'));
             const groupHeader = headers.find((header) => normalizeWhitespace(header.textContent || '').toLowerCase().includes('group'));
-            const tbody = table.querySelector('tbody');
 
-            if (!groupHeader || !tbody) {
+            if (!groupHeader) {
                 continue;
             }
 
             table.setAttribute(`data-${SCRIPT_ID}-api-sort`, 'true');
-            groupHeader.style.cursor = 'pointer';
-            groupHeader.title = 'Sort groups by cost ratio, with Auto first in ascending and last in descending';
-            groupHeader.addEventListener('click', () => {
-                const ascending = table.getAttribute(`data-${SCRIPT_ID}-api-sort-dir`) !== 'asc';
-                const rows = Array.from(tbody.querySelectorAll('tr'));
-                const groupColumnIndex = Math.max(headers.indexOf(groupHeader), 0);
-
-                rows.sort((left, right) => {
-                    const leftRank = ratioRank(left.children[groupColumnIndex]?.textContent || left.textContent || '');
-                    const rightRank = ratioRank(right.children[groupColumnIndex]?.textContent || right.textContent || '');
-
-                    if (leftRank.isAuto || rightRank.isAuto) {
-                        if (leftRank.isAuto && rightRank.isAuto) {
-                            return 0;
-                        }
-
-                        return ascending ? (leftRank.isAuto ? -1 : 1) : (leftRank.isAuto ? 1 : -1);
-                    }
-
-                    const diff = leftRank.value - rightRank.value;
-                    return ascending ? diff : -diff;
-                });
-
-                table.setAttribute(`data-${SCRIPT_ID}-api-sort-dir`, ascending ? 'asc' : 'desc');
-                rows.forEach((row) => tbody.appendChild(row));
-            });
+            groupHeader.title = 'Use the built-in Asc/Desc menu to sort by cost ratio';
         }
+    }
+
+    function rememberApiKeySortTable(event) {
+        const header = event.target.closest?.('th');
+        if (!header || !normalizeWhitespace(header.textContent || '').toLowerCase().includes('group')) {
+            return;
+        }
+
+        const table = header.closest('table');
+        if (table && getApiKeyTables().includes(table)) {
+            apiKeySortTable = table;
+        }
+    }
+
+    function handleNativeSortMenu(event) {
+        const item = event.target.closest?.('[role="menuitem"], [cmdk-item], button, div');
+        if (!item || !apiKeySortTable) {
+            return;
+        }
+
+        const label = normalizeWhitespace(item.textContent || '').toLowerCase();
+        if (label !== 'asc' && label !== 'desc') {
+            return;
+        }
+
+        const table = apiKeySortTable;
+        setTimeout(() => sortApiKeyRows(table, label === 'asc'), 0);
     }
 
     function enhancePage() {
@@ -773,6 +838,8 @@
     function boot() {
         installToggle();
         installObserver();
+        document.addEventListener('click', rememberApiKeySortTable, true);
+        document.addEventListener('click', handleNativeSortMenu, true);
         processRoot();
         processAccessibleFrames();
         enhancePage();
