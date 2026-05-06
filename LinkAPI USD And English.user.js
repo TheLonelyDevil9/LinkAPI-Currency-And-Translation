@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinkAPI USD And English
 // @namespace    https://violentmonkey.github.io/
-// @version      2.6
+// @version      2.7
 // @description  Replace CNY values with USD and clean up mixed Chinese text on LinkAPI
 // @author       TheLonelyDevil
 // @updateURL    https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translation/main/LinkAPI%20USD%20And%20English.user.js
@@ -165,10 +165,17 @@
         ['Gemini已经恢复稳定Status', 'Gemini Has Returned To Stable Status'],
         ['尊敬的客户', 'Dear customers'],
         ['由于数据中心对于开源Model的计算能力费用持续上涨', 'Due to the data center compute costs for open source models continuing to rise'],
+        ['对于开源Model的计算能力费用持续上涨', 'compute costs for open source models continue to rise'],
+        ['数据中心', 'data center'],
         ['我们预计在合同结束后', 'After the contract ends, we expect'],
         ['将从平台上移除一批开源Model', 'to remove a batch of open source models from the platform'],
+        ['将从Platform上移除一批开源Model', 'to remove a batch of open source models from the platform'],
+        ['平台上移除一批开源Model', 'remove a batch of open source models from the platform'],
+        ['一批开源Model', 'a batch of open source models'],
         ['因为连续两周每周Price上涨10%', 'Because prices have increased 10% each week for two consecutive weeks'],
+        ['连续两周每周Price上涨10%', 'prices have increased 10% each week for two consecutive weeks'],
         ['我们确实无法再继续支持这些Model', 'we can no longer continue supporting these models'],
+        ['确实无法再继续支持这些Model', 'can no longer continue supporting these models'],
         ['待批量前通知', 'We will notify you before batch removal'],
         ['感谢您的理解', 'Thank you for your understanding'],
         ['各个Group进行陆续的Price上调', 'Each group will receive gradual price increases'],
@@ -218,6 +225,7 @@
     let enhancementQueued = false;
     let apiKeySortTable = null;
     let toggleButton = null;
+    let togglePositionQueued = false;
 
     function toNumber(rawAmount) {
         return Number(rawAmount.replace(/,/g, ''));
@@ -469,7 +477,7 @@
             }
 
             .${SCRIPT_ID}-dialog-model-filter-wrap {
-                margin: 12px 0;
+                margin: 14px 0 12px;
             }
 
             .${SCRIPT_ID}-dialog-model-filter-label {
@@ -490,18 +498,21 @@
                 display: none !important;
             }
 
-            .${SCRIPT_ID}-api-info-label {
-                margin-left: 5px;
-                color: rgb(210, 218, 230);
-                font-size: 11px;
-                font-weight: 700;
-                line-height: 1;
-                white-space: nowrap;
+            [data-${SCRIPT_ID}-dashboard-filter-dialog="true"] {
+                overflow: visible !important;
             }
 
-            button[data-${SCRIPT_ID}-api-info-button="true"] {
-                min-width: 66px;
-                gap: 4px;
+            [data-${SCRIPT_ID}-quick-range-row="true"] {
+                box-sizing: border-box !important;
+                display: flex !important;
+                flex-wrap: wrap !important;
+                gap: 8px !important;
+                overflow: visible !important;
+                padding: 3px 4px !important;
+            }
+
+            [data-${SCRIPT_ID}-quick-range-row="true"] button {
+                margin: 0 !important;
             }
 
             [data-${SCRIPT_ID}-redeem="true"] {
@@ -642,6 +653,8 @@
         const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [data-state="open"]')).filter((dialog) => /filter dashboard models|chart settings|quick range|time granularity/i.test(dialog.textContent || ''));
 
         for (const dialog of dialogs) {
+            polishDashboardFilterDialog(dialog);
+
             if (dialog.querySelector(`.${SCRIPT_ID}-dialog-model-filter`)) {
                 continue;
             }
@@ -672,6 +685,30 @@
                 const insertionPoint = dialog.querySelector('form') || dialog;
                 insertionPoint.appendChild(wrapper);
             }
+        }
+    }
+
+    function findSharedAncestor(elements, boundary) {
+        let node = elements[0]?.parentElement;
+
+        while (node && node !== boundary && !elements.every((element) => node.contains(element))) {
+            node = node.parentElement;
+        }
+
+        return node && node !== boundary ? node : elements[0]?.parentElement;
+    }
+
+    function polishDashboardFilterDialog(dialog) {
+        dialog.setAttribute(`data-${SCRIPT_ID}-dashboard-filter-dialog`, 'true');
+
+        const rangeButtons = Array.from(dialog.querySelectorAll('button')).filter((button) => /\b(?:1|7|14|29)\s+days?\b/i.test(normalizeWhitespace(button.textContent || '')));
+        if (rangeButtons.length < 2) {
+            return;
+        }
+
+        const rangeRow = findSharedAncestor(rangeButtons, dialog);
+        if (rangeRow) {
+            rangeRow.setAttribute(`data-${SCRIPT_ID}-quick-range-row`, 'true');
         }
     }
 
@@ -764,42 +801,11 @@
         }
     }
 
-    function enhanceApiInfoButtons() {
-        const apiInfoBlocks = Array.from(document.querySelectorAll('section, article, main, [role="region"], div')).filter((element) => {
-            const text = normalizeWhitespace(element.textContent || '').toLowerCase();
-            return text.includes('api info') && text.includes('https://');
+    function removeStaleApiInfoLabels() {
+        document.querySelectorAll(`.${SCRIPT_ID}-api-info-label`).forEach((label) => label.remove());
+        document.querySelectorAll(`button[data-${SCRIPT_ID}-api-info-button="true"]`).forEach((button) => {
+            button.removeAttribute(`data-${SCRIPT_ID}-api-info-button`);
         });
-
-        for (const block of apiInfoBlocks.slice(0, 2)) {
-            const rows = Array.from(block.querySelectorAll('div, li, article')).filter((row) => {
-                const text = normalizeWhitespace(row.textContent || '');
-                return /^https:\/\/|https:\/\/(?:api|hk|jp|linkapi)/i.test(text) || /https:\/\/(?:api|hk|jp|linkapi)/i.test(text);
-            });
-
-            for (const row of rows) {
-                const buttons = Array.from(row.querySelectorAll('button, a[role="button"]')).filter((button) => {
-                    return !button.getAttribute(`data-${SCRIPT_ID}-api-info-button`);
-                });
-
-                const labels = ['Latency', 'Speed', 'Copy', 'Open'];
-
-                buttons.slice(-4).forEach((button, index) => {
-                    const existingText = normalizeWhitespace(button.textContent || '');
-                    if (existingText && labels.some((label) => existingText.toLowerCase().includes(label.toLowerCase()))) {
-                        return;
-                    }
-
-                    button.setAttribute(`data-${SCRIPT_ID}-api-info-button`, 'true');
-                    button.title = button.title || labels[index];
-                    button.setAttribute('aria-label', button.getAttribute('aria-label') || labels[index]);
-
-                    const label = document.createElement('span');
-                    label.className = `${SCRIPT_ID}-api-info-label`;
-                    label.textContent = labels[index];
-                    button.appendChild(label);
-                });
-            }
-        }
     }
 
     function rememberApiKeySortTable(event) {
@@ -839,7 +845,7 @@
         enhanceTimeInputs();
         enhanceDashboardModelFilterDialog();
         enhanceApiKeySorting();
-        enhanceApiInfoButtons();
+        removeStaleApiInfoLabels();
         applyStoredModelFilter();
     }
 
@@ -852,6 +858,7 @@
         requestAnimationFrame(() => {
             enhancementQueued = false;
             enhancePage();
+            queueTogglePosition();
         });
     }
 
@@ -863,6 +870,73 @@
         toggleButton.setAttribute('aria-pressed', String(enabled));
         toggleButton.textContent = enabled ? 'USD + EN' : 'Original';
         toggleButton.title = enabled ? 'Show original CNY and Chinese text' : 'Convert CNY values to USD and clean up Chinese text';
+        queueTogglePosition();
+    }
+
+    function getToggleAvoidanceElements() {
+        const selectors = [
+            'nav[aria-label*="pagination" i]',
+            '[aria-label*="pagination" i]',
+            '[class*="pagination" i]',
+            '[role="navigation"]',
+            '[data-slot="pagination"]'
+        ];
+        const candidates = new Set();
+
+        selectors.forEach((selector) => {
+            document.querySelectorAll(selector).forEach((element) => candidates.add(element));
+        });
+
+        document.querySelectorAll('button, a').forEach((element) => {
+            const label = normalizeWhitespace(element.textContent || element.getAttribute('aria-label') || '');
+            if (/^(?:\d+|\.{3}|<<|>>|<|>|previous|next)$/i.test(label)) {
+                candidates.add(element.closest('nav, [role="navigation"], [class*="pagination" i], div') || element);
+            }
+        });
+
+        return Array.from(candidates).filter((element) => {
+            if (element === toggleButton || element.closest?.(`#${SCRIPT_ID}-toggle`)) {
+                return false;
+            }
+
+            const rect = element.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0 && rect.bottom > window.innerHeight * 0.55 && rect.right > window.innerWidth * 0.35;
+        });
+    }
+
+    function updateTogglePosition() {
+        if (!toggleButton) {
+            return;
+        }
+
+        const safeBottom = 16;
+        let bottomOffset = safeBottom;
+        const toggleRect = toggleButton.getBoundingClientRect();
+        const toggleLeft = window.innerWidth - 16 - (toggleRect.width || 112);
+
+        getToggleAvoidanceElements().forEach((element) => {
+            const rect = element.getBoundingClientRect();
+            const horizontalOverlap = rect.right > toggleLeft - 12 && rect.left < window.innerWidth - 12;
+            const closeToBottom = rect.bottom > window.innerHeight - 170;
+
+            if (horizontalOverlap && closeToBottom) {
+                bottomOffset = Math.max(bottomOffset, Math.ceil(window.innerHeight - rect.top + 12));
+            }
+        });
+
+        toggleButton.style.setProperty('--tld-linkapi-toggle-bottom', `${Math.min(bottomOffset, 148)}px`);
+    }
+
+    function queueTogglePosition() {
+        if (togglePositionQueued) {
+            return;
+        }
+
+        togglePositionQueued = true;
+        requestAnimationFrame(() => {
+            togglePositionQueued = false;
+            updateTogglePosition();
+        });
     }
 
     function setEnabled(nextEnabled) {
@@ -885,7 +959,7 @@
             #${SCRIPT_ID}-toggle {
                 position: fixed;
                 right: 16px;
-                bottom: 16px;
+                bottom: var(--tld-linkapi-toggle-bottom, 16px);
                 z-index: 2147483647;
                 width: 112px;
                 height: 38px;
@@ -901,7 +975,7 @@
                 font: 750 12px/1.1 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
                 letter-spacing: 0;
                 padding: 0 14px 0 40px;
-                transition: background-color 160ms ease-out, border-color 160ms ease-out, color 160ms ease-out, box-shadow 160ms ease-out;
+                transition: bottom 180ms cubic-bezier(0.22, 1, 0.36, 1), background-color 160ms ease-out, border-color 160ms ease-out, color 160ms ease-out, box-shadow 160ms ease-out;
             }
 
             #${SCRIPT_ID}-toggle::before {
@@ -943,6 +1017,8 @@
 
         document.documentElement.appendChild(style);
         document.documentElement.appendChild(toggleButton);
+        window.addEventListener('resize', queueTogglePosition, { passive: true });
+        window.addEventListener('scroll', queueTogglePosition, { passive: true });
         updateToggle();
     }
 

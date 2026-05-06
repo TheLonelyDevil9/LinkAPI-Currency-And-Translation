@@ -17,7 +17,6 @@ https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translati
 - Adds `00:00` shortcut buttons beside detected time filter fields.
 - Adds a local model string filter to the dashboard filter modal.
 - Fixes API Key Group sorting through the site's built-in Asc/Desc menu by sorting ratios numerically with Auto first/last.
-- Adds compact labels to API Info icon buttons: Latency, Speed, Copy, Open.
 - Improves the wallet redemption placeholder and reduces the input width.
 
 ## Privacy
