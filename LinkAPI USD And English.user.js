@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinkAPI USD And English
 // @namespace    https://violentmonkey.github.io/
-// @version      3.0
+// @version      3.1
 // @description  Replace CNY values with USD and clean up mixed Chinese text on LinkAPI
 // @author       TheLonelyDevil
 // @updateURL    https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translation/main/LinkAPI%20USD%20And%20English.user.js
@@ -1030,7 +1030,17 @@
     }
 
     function isLogPage() {
-        return /\/console\/log(?:\/|$)/.test(window.location.pathname);
+        if (/\/console\/log(?:\/|$)/.test(window.location.pathname)) {
+            return true;
+        }
+
+        const pageText = normalizeWhitespace(document.body?.textContent || '').toLowerCase();
+        if (!/used quota|rpm|tpm|usage logs|time\/request|request id|tokens|consume/.test(pageText)) {
+            return false;
+        }
+
+        return Boolean(document.querySelector('input[value*=":"]'))
+            && /time|tokens|group|type|model/.test(pageText);
     }
 
     function isModelMarketplacePage() {
