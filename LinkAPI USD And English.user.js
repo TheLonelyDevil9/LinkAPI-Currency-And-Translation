@@ -786,6 +786,10 @@
     }
 
     function shouldAttachMidnightButton(input) {
+        if (isLogPage()) {
+            return false;
+        }
+
         if (!isElementVisible(input) || input.closest(`.${SCRIPT_ID}-log-refresh`)) {
             return false;
         }
@@ -861,12 +865,18 @@
     }
 
     function enhanceTimeInputs() {
+        if (isLogPage()) {
+            document.querySelectorAll(`.${SCRIPT_ID}-midnight-button`).forEach((button) => button.remove());
+            findInputs({ visibleOnly: false }).forEach((input) => input.removeAttribute(`data-${SCRIPT_ID}-midnight-bound`));
+        }
+
         for (const input of findInputs({ visibleOnly: false })) {
             if (!inputLooksLikeTimeSelector(input) || input.getAttribute(`data-${SCRIPT_ID}-midnight-bound`) === 'true') {
                 continue;
             }
 
             if (!shouldAttachMidnightButton(input)) {
+                input.removeAttribute(`data-${SCRIPT_ID}-midnight-bound`);
                 continue;
             }
 
@@ -1021,6 +1031,22 @@
 
     function isLogPage() {
         return /\/console\/log(?:\/|$)/.test(window.location.pathname);
+    }
+
+    function isModelMarketplacePage() {
+        const path = window.location.pathname.toLowerCase();
+        if (/^\/(?:pricing|marketplace|models?|model(?:s|-marketplace)?)(?:\/|$)/.test(path)) {
+            return true;
+        }
+
+        return Array.from(document.querySelectorAll('h1, h2, [role="heading"]')).some((heading) => {
+            const text = normalizeWhitespace(heading.textContent || '').toLowerCase();
+            return /^(?:model marketplace|model square|模型广场)$/.test(text);
+        });
+    }
+
+    function shouldHideToggle() {
+        return isModelMarketplacePage();
     }
 
     function clearLogAutoRefreshTimers() {
@@ -1192,6 +1218,11 @@
             return;
         }
 
+        toggleButton.hidden = shouldHideToggle();
+        if (toggleButton.hidden) {
+            return;
+        }
+
         toggleButton.setAttribute('aria-pressed', String(enabled));
         toggleButton.textContent = enabled ? 'USD + EN' : 'Original';
         toggleButton.title = enabled ? 'Show original CNY and Chinese text' : 'Convert CNY values to USD and clean up Chinese text';
@@ -1250,7 +1281,7 @@
     }
 
     function updateTogglePosition() {
-        if (!toggleButton) {
+        if (!toggleButton || toggleButton.hidden) {
             return;
         }
 
