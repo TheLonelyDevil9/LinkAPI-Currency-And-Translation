@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinkAPI USD And English
 // @namespace    https://violentmonkey.github.io/
-// @version      2.9
+// @version      3.0
 // @description  Replace CNY values with USD and clean up mixed Chinese text on LinkAPI
 // @author       TheLonelyDevil
 // @updateURL    https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translation/main/LinkAPI%20USD%20And%20English.user.js
@@ -12,6 +12,7 @@
 // @match        https://jp.linkapi.ai/*
 // @match        https://home.linkapi.ai/*
 // @grant        none
+// @run-at       document-start
 // ==/UserScript==
 
 (function() {
@@ -19,9 +20,16 @@
 
     const SCRIPT_ID = 'tld-linkapi-cny-usd';
     const STORAGE_KEY = `${SCRIPT_ID}:enabled`;
-    const MODEL_FILTER_STORAGE_KEY = `${SCRIPT_ID}:model-filter`;
+    const LOG_AUTO_REFRESH_STORAGE_KEY = `${SCRIPT_ID}:log-auto-refresh`;
     const HELPER_STYLE_ID = `${SCRIPT_ID}-helper-style`;
+    const LINKAPI_CHATS_STORAGE_KEY = 'chats';
     const CNY_TO_USD_RATE = 0.146201;
+    const LOG_AUTO_REFRESH_INTERVAL_MS = 30000;
+    const CHAT_IMPORT_TEMPLATES = [
+        ['CC Switch', 'ccswitch'],
+        ['Cherry Studio', 'cherrystudio://providers/api-keys?v=1&data={cherryConfig}'],
+        ['流畅阅读', 'fluentread']
+    ];
 
     const PREFIX_CNY_PATTERN = /(?<![\w$])(?:CNY|RMB|CN¥|CN￥|¥|￥|人民币)\s*([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)(?!\s*(?:CNY|RMB|元)?\s*\))/gi;
     const SUFFIX_CNY_PATTERN = /(?<![\w$])([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?:CNY|RMB|人民币|元)(?!\s*\))/gi;
@@ -226,6 +234,11 @@
     let apiKeySortTable = null;
     let toggleButton = null;
     let togglePositionQueued = false;
+    let chatStorageWriteInProgress = false;
+    let logAutoRefreshTimer = null;
+    let logAutoRefreshCountdownTimer = null;
+    let logAutoRefreshNextAt = 0;
+    let lastRouteKey = '';
 
     function toNumber(rawAmount) {
         return Number(rawAmount.replace(/,/g, ''));
@@ -248,6 +261,138 @@
 
     function normalizeWhitespace(text) {
         return text.replace(/\s+/g, ' ').trim();
+    }
+
+    function normalizeChatConfigText(text) {
+        return normalizeWhitespace(String(text || '')).toLowerCase();
+    }
+
+    function getCanonicalChatTemplate(name, value) {
+        const normalizedName = normalizeChatConfigText(name);
+        const normalizedValue = normalizeChatConfigText(value);
+
+        if (/cc\s*switch/i.test(normalizedName) || /^ccswitch(?::|$)/i.test(normalizedValue)) {
+            return CHAT_IMPORT_TEMPLATES[0];
+        }
+
+        if (/cherry\s*studio/i.test(normalizedName) || /^cherrystudio:\/\//i.test(normalizedValue)) {
+            return CHAT_IMPORT_TEMPLATES[1];
+        }
+
+        if (/流畅阅读|fluent\s*read/i.test(String(name || '')) || /^fluentread/i.test(normalizedValue)) {
+            return CHAT_IMPORT_TEMPLATES[2];
+        }
+
+        return null;
+    }
+
+    function normalizeChatConfigValue(rawValue) {
+        let parsedValue;
+
+        try {
+            parsedValue = JSON.parse(rawValue || '[]');
+        } catch (_) {
+            parsedValue = [];
+        }
+
+        const nextEntries = [];
+        const seenNames = new Set();
+
+        const appendEntry = (name, value) => {
+            if (!name || typeof value !== 'string') {
+                return;
+            }
+
+            const key = normalizeChatConfigText(name);
+            if (!key || seenNames.has(key)) {
+                return;
+            }
+
+            seenNames.add(key);
+            nextEntries.push({ [name]: value });
+        };
+
+        const appendTemplate = ([name, value]) => appendEntry(name, value);
+
+        if (Array.isArray(parsedValue)) {
+            for (const entry of parsedValue) {
+                if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+                    continue;
+                }
+
+                for (const [name, value] of Object.entries(entry)) {
+                    const template = getCanonicalChatTemplate(name, value);
+                    if (template) {
+                        appendTemplate(template);
+                        continue;
+                    }
+
+                    appendEntry(name, typeof value === 'string' ? value : String(value || ''));
+                }
+            }
+        }
+
+        CHAT_IMPORT_TEMPLATES.forEach(appendTemplate);
+
+        return JSON.stringify(nextEntries);
+    }
+
+    function repairStoredChatConfig() {
+        try {
+            const rawValue = localStorage.getItem(LINKAPI_CHATS_STORAGE_KEY);
+            const normalizedValue = normalizeChatConfigValue(rawValue);
+
+            if (rawValue !== normalizedValue) {
+                chatStorageWriteInProgress = true;
+                localStorage.setItem(LINKAPI_CHATS_STORAGE_KEY, normalizedValue);
+            }
+        } catch (_) {
+            // Best-effort compatibility repair only.
+        } finally {
+            chatStorageWriteInProgress = false;
+        }
+    }
+
+    function installChatStorageCompatibilityHook() {
+        try {
+            const nativeSetItem = Storage.prototype.setItem;
+            if (nativeSetItem.__tldLinkApiChatPatched) {
+                return;
+            }
+
+            const patchedSetItem = function(key, value) {
+                if (this === localStorage && key === LINKAPI_CHATS_STORAGE_KEY && !chatStorageWriteInProgress) {
+                    return nativeSetItem.call(this, key, normalizeChatConfigValue(String(value || '')));
+                }
+
+                return nativeSetItem.call(this, key, value);
+            };
+
+            patchedSetItem.__tldLinkApiChatPatched = true;
+            patchedSetItem.__tldLinkApiNativeSetItem = nativeSetItem;
+            Storage.prototype.setItem = patchedSetItem;
+        } catch (_) {
+            // Some browser/userscript contexts may block patching Storage.
+        }
+    }
+
+    function isChatImportControl(element) {
+        if (!element) {
+            return false;
+        }
+
+        const text = normalizeWhitespace(element.textContent || '');
+        if (/^(?:CC Switch|Cherry Studio|流畅阅读)$/.test(text)) {
+            return true;
+        }
+
+        const importMenu = element.closest?.('[role="menu"], .semi-dropdown-menu');
+        if (importMenu && /CC Switch|Cherry Studio|流畅阅读/.test(importMenu.textContent || '')) {
+            return true;
+        }
+
+        const ccSwitchDialog = element.closest?.('[role="dialog"], .semi-modal');
+        return Boolean(ccSwitchDialog && /CC Switch|填入 CC Switch|打开 CC Switch/.test(ccSwitchDialog.textContent || ''));
     }
 
     function looksLikeEnglish(text) {
@@ -319,7 +464,39 @@
             .replace(/\s{2,}/g, ' ');
     }
 
-    function convertText(text) {
+    function shouldTranslateNode(node) {
+        const parent = node.parentElement;
+        if (!parent) {
+            return false;
+        }
+
+        const stableContainer = parent.closest([
+            'button',
+            'label',
+            'summary',
+            'th',
+            'nav',
+            'header',
+            'aside',
+            '[role="button"]',
+            '[role="menuitem"]',
+            '[role="tab"]',
+            '[role="columnheader"]',
+            '[role="navigation"]'
+        ].join(','));
+
+        const selfLabeledElement = parent.matches('[aria-label], [aria-labelledby]')
+            && normalizeWhitespace(parent.textContent || '').length <= 80;
+        if (!stableContainer && !selfLabeledElement) {
+            return false;
+        }
+
+        const contentContainer = parent.closest('article, [role="article"], [data-testid*="announcement" i], [class*="announcement" i], [class*="timeline" i]');
+        return !contentContainer || Boolean(parent.closest('button, [role="button"], a[href]'));
+    }
+
+    function convertText(text, options = {}) {
+        const translate = options.translate !== false;
         const replaceAmount = (match, rawAmount) => {
             const cnyValue = toNumber(rawAmount);
             if (!Number.isFinite(cnyValue)) {
@@ -335,12 +512,12 @@
             .replace(CNY_UNIT_LABEL_PATTERN, '(USD)')
             .replace(COPYRIGHT_YEAR_PATTERN, '© 2026');
 
-        return translateChineseText(convertedCurrencyText);
+        return translate ? translateChineseText(convertedCurrencyText) : convertedCurrencyText;
     }
 
     function shouldSkipNode(node) {
         const parent = node.parentElement;
-        if (!parent || SKIP_TAGS.has(parent.tagName) || parent.closest(`#${SCRIPT_ID}-toggle`)) {
+        if (!parent || SKIP_TAGS.has(parent.tagName) || parent.closest(`#${SCRIPT_ID}-toggle`) || isChatImportControl(parent)) {
             return true;
         }
 
@@ -353,7 +530,7 @@
         }
 
         const originalText = node.__tldCnyOriginalText ?? node.textContent;
-        const convertedText = convertText(originalText);
+        const convertedText = convertText(originalText, { translate: shouldTranslateNode(node) });
 
         if (convertedText === originalText) {
             return;
@@ -450,8 +627,8 @@
         style.id = HELPER_STYLE_ID;
         style.textContent = `
             .${SCRIPT_ID}-midnight-button,
-            .${SCRIPT_ID}-model-filter,
-            .${SCRIPT_ID}-dialog-model-filter {
+            .${SCRIPT_ID}-time-shortcut-button,
+            .${SCRIPT_ID}-log-refresh-button {
                 border: 1px solid rgba(134, 146, 166, 0.36);
                 border-radius: 8px;
                 background: rgba(34, 38, 48, 0.92);
@@ -469,37 +646,13 @@
             }
 
             .${SCRIPT_ID}-midnight-button:hover,
-            .${SCRIPT_ID}-midnight-button:focus-visible {
+            .${SCRIPT_ID}-midnight-button:focus-visible,
+            .${SCRIPT_ID}-time-shortcut-button:hover,
+            .${SCRIPT_ID}-time-shortcut-button:focus-visible,
+            .${SCRIPT_ID}-log-refresh-button:hover,
+            .${SCRIPT_ID}-log-refresh-button:focus-visible {
                 border-color: rgba(56, 189, 248, 0.72);
                 color: rgb(240, 249, 255);
-            }
-
-            .${SCRIPT_ID}-model-filter {
-                width: min(240px, 100%);
-                padding: 0 10px;
-                margin: 6px 8px 6px 0;
-            }
-
-            .${SCRIPT_ID}-dialog-model-filter-wrap {
-                margin: 14px 0 12px;
-            }
-
-            .${SCRIPT_ID}-dialog-model-filter-label {
-                display: block;
-                margin: 0 0 6px;
-                color: rgb(236, 241, 247);
-                font: 700 13px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            }
-
-            .${SCRIPT_ID}-dialog-model-filter {
-                box-sizing: border-box;
-                width: 100%;
-                height: 34px;
-                padding: 0 11px;
-            }
-
-            .${SCRIPT_ID}-hidden-by-model-filter {
-                display: none !important;
             }
 
             [data-${SCRIPT_ID}-dashboard-filter-dialog="true"] {
@@ -519,83 +672,79 @@
                 margin: 0 !important;
             }
 
-            [data-${SCRIPT_ID}-redeem="true"] {
-                width: 100% !important;
-                max-width: 560px !important;
-            }
-
-            [data-${SCRIPT_ID}-redeem-input-wrap="true"] {
-                flex: 0 1 560px !important;
-                max-width: 100% !important;
-            }
-
-            [data-${SCRIPT_ID}-redeem-wrap="true"] {
+            .${SCRIPT_ID}-time-shortcut {
                 box-sizing: border-box !important;
-                display: flex !important;
+                display: inline-flex !important;
                 align-items: center !important;
-                justify-content: flex-start !important;
-                flex-wrap: wrap !important;
-                gap: 12px !important;
+                margin: 6px 8px 6px 0 !important;
+                vertical-align: middle !important;
             }
 
-            [data-${SCRIPT_ID}-redeem-wrap="true"] button {
-                flex: 0 0 auto !important;
-                margin-left: 0 !important;
+            .${SCRIPT_ID}-time-shortcut-button {
+                cursor: pointer;
+                padding: 0 10px;
                 white-space: nowrap !important;
+            }
+
+            .${SCRIPT_ID}-log-refresh {
+                box-sizing: border-box !important;
+                display: inline-flex !important;
+                align-items: center !important;
+                flex-wrap: nowrap !important;
+                gap: 8px !important;
+                margin: 6px 8px 6px 0 !important;
+                vertical-align: middle !important;
+            }
+
+            .${SCRIPT_ID}-log-refresh-button {
+                cursor: pointer;
+                padding: 0 10px;
+                white-space: nowrap !important;
+            }
+
+            .${SCRIPT_ID}-log-refresh-button[aria-pressed="true"] {
+                border-color: rgba(16, 185, 129, 0.78);
+                background: rgba(6, 95, 70, 0.94);
+                color: rgb(236, 253, 245);
+            }
+
+            .${SCRIPT_ID}-log-refresh-status {
+                color: rgb(84, 92, 106);
+                font: 600 12px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                letter-spacing: 0;
+                white-space: nowrap;
             }
         `;
 
         document.documentElement.appendChild(style);
     }
 
-    function findInputs() {
+    function isElementVisible(element) {
+        if (!element || !document.body.contains(element)) {
+            return false;
+        }
+
+        const style = window.getComputedStyle(element);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+            return false;
+        }
+
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+    }
+
+    function findInputs({ visibleOnly = true } = {}) {
         return Array.from(document.querySelectorAll('input')).filter((input) => {
             if (input.type === 'hidden' || input.disabled) {
                 return false;
             }
 
-            return input.offsetParent !== null || input.getClientRects().length > 0 || document.body.contains(input);
+            return !visibleOnly || isElementVisible(input);
         });
     }
 
     function normalizeInputValue(value) {
         return String(value || '').toLowerCase().trim();
-    }
-
-    function findRedemptionControlRow(input, wrapper) {
-        let node = wrapper || input.parentElement;
-        for (let depth = 0; node && depth < 5; depth += 1, node = node.parentElement) {
-            const inputCount = node.querySelectorAll('input').length;
-            const buttonCount = node.querySelectorAll('button').length;
-            if (inputCount <= 2 && buttonCount > 0 && buttonCount <= 3) {
-                return node;
-            }
-        }
-
-        return wrapper;
-    }
-
-    function enhanceRedemptionInput() {
-        for (const input of findInputs()) {
-            const placeholder = normalizeInputValue(input.placeholder);
-            if (!placeholder.includes('redemption code')) {
-                continue;
-            }
-
-            input.placeholder = 'Enter your redemption code here';
-            input.setAttribute(`data-${SCRIPT_ID}-redeem`, 'true');
-            const wrapper = input.closest('div');
-            if (wrapper) {
-                const controlRow = findRedemptionControlRow(input, wrapper);
-                if (controlRow) {
-                    controlRow.setAttribute(`data-${SCRIPT_ID}-redeem-wrap`, 'true');
-                }
-
-                if (wrapper !== controlRow) {
-                    wrapper.setAttribute(`data-${SCRIPT_ID}-redeem-input-wrap`, 'true');
-                }
-            }
-        }
     }
 
     function setInputValue(input, value) {
@@ -610,84 +759,131 @@
         input.dispatchEvent(new Event('change', { bubbles: true }));
     }
 
-    function enhanceTimeInputs() {
-        for (const input of findInputs()) {
-            const value = normalizeInputValue(input.value);
-            const placeholder = normalizeInputValue(input.placeholder);
-            const isTimeInput = input.type === 'time' || /\d{1,2}\s*:\s*\d{2}(?:\s*[ap]m)?/i.test(value) || placeholder.includes('time');
+    function inputLooksLikeTimeSelector(input) {
+        const value = normalizeInputValue(input.value);
+        const placeholder = normalizeInputValue(input.placeholder);
+        const ariaLabel = normalizeInputValue(input.getAttribute('aria-label'));
+        const name = normalizeInputValue(input.name || input.id || input.getAttribute('data-field'));
 
-            if (!isTimeInput || input.getAttribute(`data-${SCRIPT_ID}-midnight-bound`) === 'true') {
+        return input.type === 'time'
+            || /\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}(?::\d{2})?/.test(value)
+            || /\d{1,2}\s*:\s*\d{2}(?:\s*[ap]m)?/.test(value)
+            || /(?:start|end|created)?\s*time|time\s*(?:start|end)?/.test(`${placeholder} ${ariaLabel} ${name}`);
+    }
+
+    function getMidnightValue(input) {
+        const rawValue = String(input.value || '');
+        const datePrefix = rawValue.match(/^\s*(\d{4}-\d{2}-\d{2})\s+/)?.[1];
+        if (datePrefix) {
+            return `${datePrefix} 00:00:00`;
+        }
+
+        if (input.type === 'time') {
+            return '00:00:00';
+        }
+
+        return '00:00:00';
+    }
+
+    function shouldAttachMidnightButton(input) {
+        if (!isElementVisible(input) || input.closest(`.${SCRIPT_ID}-log-refresh`)) {
+            return false;
+        }
+
+        const placeholder = normalizeInputValue(input.placeholder);
+        return !placeholder.includes('redemption code');
+    }
+
+    function findStartTimeInput() {
+        return findInputs({ visibleOnly: false }).find((input) => {
+            if (!inputLooksLikeTimeSelector(input)) {
+                return false;
+            }
+
+            const labels = [
+                input.placeholder,
+                input.getAttribute('aria-label'),
+                input.name,
+                input.id,
+                input.getAttribute('data-field')
+            ].map(normalizeInputValue).join(' ');
+
+            return /start|begin|from|开始/.test(labels)
+                || /^\d{4}-\d{2}-\d{2}\s+00:/.test(normalizeInputValue(input.value));
+        }) || null;
+    }
+
+    function findTimeShortcutInsertionPoint() {
+        const queryButton = getLogQueryButton();
+        if (queryButton) {
+            return queryButton;
+        }
+
+        return document.querySelector('main button, main input, section button, section input')
+            || document.querySelector('main, section')
+            || document.body;
+    }
+
+    function ensureHiddenTimeShortcut() {
+        const existingShortcut = document.getElementById(`${SCRIPT_ID}-time-shortcut`);
+        const hasVisibleTimeShortcut = Boolean(document.querySelector(`.${SCRIPT_ID}-midnight-button`));
+        const targetInput = findStartTimeInput();
+
+        if (hasVisibleTimeShortcut || !targetInput) {
+            existingShortcut?.remove();
+            return;
+        }
+
+        if (existingShortcut) {
+            return;
+        }
+
+        const control = document.createElement('span');
+        control.id = `${SCRIPT_ID}-time-shortcut`;
+        control.className = `${SCRIPT_ID}-time-shortcut`;
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `${SCRIPT_ID}-time-shortcut-button`;
+        button.textContent = '00:00 start';
+        button.title = 'Set the start time filter to 00:00:00';
+        button.addEventListener('click', () => setInputValue(targetInput, getMidnightValue(targetInput)));
+        control.appendChild(button);
+
+        const insertionPoint = findTimeShortcutInsertionPoint();
+        if (insertionPoint === document.body) {
+            document.body.prepend(control);
+        } else if (insertionPoint.matches?.('main, section')) {
+            insertionPoint.prepend(control);
+        } else {
+            insertionPoint.insertAdjacentElement('afterend', control);
+        }
+    }
+
+    function enhanceTimeInputs() {
+        for (const input of findInputs({ visibleOnly: false })) {
+            if (!inputLooksLikeTimeSelector(input) || input.getAttribute(`data-${SCRIPT_ID}-midnight-bound`) === 'true') {
+                continue;
+            }
+
+            if (!shouldAttachMidnightButton(input)) {
                 continue;
             }
 
             input.setAttribute(`data-${SCRIPT_ID}-midnight-bound`, 'true');
-
             const button = document.createElement('button');
             button.type = 'button';
             button.className = `${SCRIPT_ID}-midnight-button`;
             button.textContent = '00:00';
             button.title = 'Set this time to 00:00:00';
             button.addEventListener('click', () => {
-                const midnightValue = input.type === 'time' ? '00:00:00' : '00 : 00 AM';
-                setInputValue(input, midnightValue);
+                setInputValue(input, getMidnightValue(input));
             });
 
             input.insertAdjacentElement('afterend', button);
         }
-    }
 
-    function getRowsNear(element) {
-        const scope = element.closest('main, [role="dialog"], section, article, body') || document.body;
-        return Array.from(scope.querySelectorAll('tbody tr, [role="row"], li, article')).filter((row) => {
-            const text = normalizeWhitespace(row.textContent || '');
-            return text.length > 0 && /model|token|group|claude|gemini|gpt|deepseek|codex|api|sk-/i.test(text);
-        });
-    }
-
-    function getModelFilterTargets(scope) {
-        return Array.from(scope.querySelectorAll('[data-model], [data-model-name], [data-row-key], tbody tr, [role="row"], article, li')).filter((row) => {
-            if (row.closest('table') && /api key|quota|group|enabled|auto/i.test(row.closest('table').textContent || '')) {
-                return false;
-            }
-
-            const text = normalizeWhitespace(row.textContent || '');
-            return text.length > 0 && /model|token|claude|gemini|gpt|deepseek|codex|llama|qwen|mistral|api/i.test(text);
-        });
-    }
-
-    function applyModelFilter(input, scope = null) {
-        const query = normalizeInputValue(input.value);
-        const rows = scope ? getRowsNear(scope) : getRowsNear(input);
-
-        rows.forEach((row) => {
-            if (!query || normalizeInputValue(row.textContent).includes(query)) {
-                row.classList.remove(`${SCRIPT_ID}-hidden-by-model-filter`);
-            } else {
-                row.classList.add(`${SCRIPT_ID}-hidden-by-model-filter`);
-            }
-        });
-    }
-
-    function applyStoredModelFilter() {
-        const query = localStorage.getItem(MODEL_FILTER_STORAGE_KEY) || '';
-        if (!query) {
-            return;
-        }
-
-        const syntheticInput = { value: query };
-        for (const scope of document.querySelectorAll('main, [role="dialog"], section')) {
-            const text = normalizeInputValue(scope.textContent);
-            if (/(usage logs|task logs|dashboard|filter dashboard models)/.test(text) && !/api keys/.test(text)) {
-                const targets = getModelFilterTargets(scope);
-                targets.forEach((row) => {
-                    if (!query || normalizeInputValue(row.textContent).includes(normalizeInputValue(query))) {
-                        row.classList.remove(`${SCRIPT_ID}-hidden-by-model-filter`);
-                    } else {
-                        row.classList.add(`${SCRIPT_ID}-hidden-by-model-filter`);
-                    }
-                });
-            }
-        }
+        ensureHiddenTimeShortcut();
     }
 
     function enhanceDashboardModelFilterDialog() {
@@ -695,37 +891,6 @@
 
         for (const dialog of dialogs) {
             polishDashboardFilterDialog(dialog);
-
-            if (dialog.querySelector(`.${SCRIPT_ID}-dialog-model-filter`)) {
-                continue;
-            }
-
-            const wrapper = document.createElement('label');
-            wrapper.className = `${SCRIPT_ID}-dialog-model-filter-wrap`;
-
-            const label = document.createElement('span');
-            label.className = `${SCRIPT_ID}-dialog-model-filter-label`;
-            label.textContent = 'Model Filter';
-
-            const input = document.createElement('input');
-            input.type = 'search';
-            input.className = `${SCRIPT_ID}-dialog-model-filter`;
-            input.placeholder = 'String match loaded models, groups, or tags';
-            input.value = localStorage.getItem(MODEL_FILTER_STORAGE_KEY) || '';
-            input.addEventListener('input', () => {
-                localStorage.setItem(MODEL_FILTER_STORAGE_KEY, input.value);
-                applyStoredModelFilter();
-            });
-
-            wrapper.append(label, input);
-
-            const chartSettings = Array.from(dialog.querySelectorAll('*')).find((element) => normalizeWhitespace(element.textContent || '').toLowerCase() === 'chart settings');
-            if (chartSettings) {
-                chartSettings.insertAdjacentElement('afterend', wrapper);
-            } else {
-                const insertionPoint = dialog.querySelector('form') || dialog;
-                insertionPoint.appendChild(wrapper);
-            }
         }
     }
 
@@ -750,32 +915,6 @@
         const rangeRow = findSharedAncestor(rangeButtons, dialog);
         if (rangeRow) {
             rangeRow.setAttribute(`data-${SCRIPT_ID}-quick-range-row`, 'true');
-        }
-    }
-
-    function enhanceModelFilters() {
-        const anchors = Array.from(document.querySelectorAll('main, [role="dialog"], section')).filter((element) => {
-            const text = normalizeInputValue(element.textContent);
-            return /(usage logs|task logs|model|token|api keys|filter)/.test(text) && getRowsNear(element).length >= 3;
-        });
-
-        for (const anchor of anchors.slice(0, 3)) {
-            if (anchor.querySelector(`.${SCRIPT_ID}-model-filter`)) {
-                continue;
-            }
-
-            const input = document.createElement('input');
-            input.type = 'search';
-            input.className = `${SCRIPT_ID}-model-filter`;
-            input.placeholder = 'Filter loaded models, groups, or tokens';
-            input.addEventListener('input', () => applyModelFilter(input));
-
-            const insertionPoint = anchor.querySelector('input, button, table, [role="table"]') || anchor.firstElementChild;
-            if (insertionPoint) {
-                insertionPoint.insertAdjacentElement('beforebegin', input);
-            } else {
-                anchor.prepend(input);
-            }
         }
     }
 
@@ -880,14 +1019,159 @@
         setTimeout(() => sortApiKeyRows(table, label === 'asc'), 0);
     }
 
+    function isLogPage() {
+        return /\/console\/log(?:\/|$)/.test(window.location.pathname);
+    }
+
+    function clearLogAutoRefreshTimers() {
+        if (logAutoRefreshTimer) {
+            clearInterval(logAutoRefreshTimer);
+            logAutoRefreshTimer = null;
+        }
+
+        if (logAutoRefreshCountdownTimer) {
+            clearInterval(logAutoRefreshCountdownTimer);
+            logAutoRefreshCountdownTimer = null;
+        }
+    }
+
+    function isAutoRefreshEnabled() {
+        return localStorage.getItem(LOG_AUTO_REFRESH_STORAGE_KEY) === 'true';
+    }
+
+    function getVisibleButtons() {
+        return Array.from(document.querySelectorAll('button, [role="button"]')).filter(isElementVisible);
+    }
+
+    function getLogQueryButton() {
+        const queryLabels = /^(?:query|search|refresh|查询|搜索|刷新)$/i;
+        return getVisibleButtons().find((button) => queryLabels.test(normalizeWhitespace(button.textContent || button.getAttribute('aria-label') || '')))
+            || null;
+    }
+
+    function triggerLogRefresh() {
+        if (!isLogPage()) {
+            return;
+        }
+
+        const queryButton = getLogQueryButton();
+        if (queryButton) {
+            queryButton.click();
+        } else {
+            window.location.reload();
+        }
+
+        logAutoRefreshNextAt = Date.now() + LOG_AUTO_REFRESH_INTERVAL_MS;
+        updateLogRefreshControl();
+    }
+
+    function updateLogRefreshControl() {
+        const control = document.getElementById(`${SCRIPT_ID}-log-refresh`);
+        if (!control) {
+            return;
+        }
+
+        const button = control.querySelector(`.${SCRIPT_ID}-log-refresh-button`);
+        const status = control.querySelector(`.${SCRIPT_ID}-log-refresh-status`);
+        const active = isAutoRefreshEnabled() && isLogPage();
+        if (button) {
+            button.setAttribute('aria-pressed', String(active));
+            button.textContent = active ? 'Auto refresh on' : 'Auto refresh';
+            button.title = active ? 'Pause usage log auto-refresh' : 'Refresh usage logs every 30 seconds';
+        }
+
+        if (status) {
+            const remainingSeconds = Math.max(0, Math.ceil((logAutoRefreshNextAt - Date.now()) / 1000));
+            status.textContent = active ? `${remainingSeconds || 30}s` : '30 sec';
+        }
+    }
+
+    function syncLogAutoRefreshTimer() {
+        if (!isAutoRefreshEnabled() || !isLogPage()) {
+            clearLogAutoRefreshTimers();
+            updateLogRefreshControl();
+            return;
+        }
+
+        if (logAutoRefreshTimer) {
+            updateLogRefreshControl();
+            return;
+        }
+
+        logAutoRefreshNextAt = Date.now() + LOG_AUTO_REFRESH_INTERVAL_MS;
+        logAutoRefreshTimer = setInterval(triggerLogRefresh, LOG_AUTO_REFRESH_INTERVAL_MS);
+        logAutoRefreshCountdownTimer = setInterval(updateLogRefreshControl, 1000);
+        updateLogRefreshControl();
+    }
+
+    function findLogRefreshInsertionPoint() {
+        const queryButton = getLogQueryButton();
+        if (queryButton) {
+            return queryButton;
+        }
+
+        return document.querySelector('main button, main input, section button, section input, table, [role="table"]')
+            || document.querySelector('main, section')
+            || document.body;
+    }
+
+    function enhanceLogAutoRefresh() {
+        if (!isLogPage()) {
+            document.getElementById(`${SCRIPT_ID}-log-refresh`)?.remove();
+            syncLogAutoRefreshTimer();
+            return;
+        }
+
+        if (!document.getElementById(`${SCRIPT_ID}-log-refresh`)) {
+            const control = document.createElement('span');
+            control.id = `${SCRIPT_ID}-log-refresh`;
+            control.className = `${SCRIPT_ID}-log-refresh`;
+
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = `${SCRIPT_ID}-log-refresh-button`;
+            button.addEventListener('click', () => {
+                const nextEnabled = !isAutoRefreshEnabled();
+                localStorage.setItem(LOG_AUTO_REFRESH_STORAGE_KEY, String(nextEnabled));
+                syncLogAutoRefreshTimer();
+                if (nextEnabled) {
+                    triggerLogRefresh();
+                }
+            });
+
+            const status = document.createElement('span');
+            status.className = `${SCRIPT_ID}-log-refresh-status`;
+
+            control.append(button, status);
+
+            const insertionPoint = findLogRefreshInsertionPoint();
+            if (insertionPoint === document.body) {
+                document.body.prepend(control);
+            } else if (insertionPoint.matches?.('main, section')) {
+                insertionPoint.prepend(control);
+            } else {
+                insertionPoint.insertAdjacentElement('afterend', control);
+            }
+        }
+
+        syncLogAutoRefreshTimer();
+    }
+
     function enhancePage() {
+        const routeKey = `${window.location.pathname}${window.location.search}`;
+        if (routeKey !== lastRouteKey) {
+            lastRouteKey = routeKey;
+            if (!isLogPage()) {
+                clearLogAutoRefreshTimers();
+            }
+        }
+
         installHelperStyles();
-        enhanceRedemptionInput();
         enhanceTimeInputs();
         enhanceDashboardModelFilterDialog();
+        enhanceLogAutoRefresh();
         enhanceApiKeySorting();
         removeStaleApiInfoLabels();
-        applyStoredModelFilter();
     }
 
     function queueEnhancements() {
@@ -1094,8 +1378,11 @@
                 if (mutation.type === 'characterData') {
                     const node = mutation.target;
 
-                    if (node.__tldCnyOriginalText !== undefined && (!enabled || node.textContent !== convertText(node.__tldCnyOriginalText))) {
-                        node.__tldCnyOriginalText = node.textContent;
+                    if (node.__tldCnyOriginalText !== undefined) {
+                        const expectedText = convertText(node.__tldCnyOriginalText, { translate: shouldTranslateNode(node) });
+                        if (!enabled || node.textContent !== expectedText) {
+                            node.__tldCnyOriginalText = node.textContent;
+                        }
                     }
 
                     if (!enabled) {
@@ -1129,6 +1416,7 @@
     }
 
     function boot() {
+        repairStoredChatConfig();
         installToggle();
         installObserver();
         document.addEventListener('click', rememberApiKeySortTable, true);
@@ -1137,6 +1425,9 @@
         processAccessibleFrames();
         enhancePage();
     }
+
+    installChatStorageCompatibilityHook();
+    repairStoredChatConfig();
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', boot, { once: true });

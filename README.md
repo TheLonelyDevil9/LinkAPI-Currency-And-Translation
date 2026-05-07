@@ -10,18 +10,17 @@ https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translati
 
 - Converts visible CNY/RMB/yuan values to USD with comma grouping, using extra decimals for nonzero sub-cent amounts.
 - Adds a floating `USD + EN` / `Original` toggle.
-- Watches dynamic page updates, including logs, modals, dashboard cards, and announcements.
-- Cleans mixed Chinese/English LinkAPI UI text with a local glossary.
-- Translates known Timeline/FAQ announcement text without calling any external translation API.
+- Watches dynamic page updates, including logs, modals, dashboard cards, and old/new console layouts.
+- Cleans stable LinkAPI UI controls, labels, headings, and navigation text with a local glossary.
 - Updates `© 2025 LinkAPI` to `© 2026 LinkAPI`.
-- Adds `00:00` shortcut buttons beside detected time filter fields.
-- Adds a local model string filter to the dashboard filter modal.
-- Fixes API Key Group sorting through the site's built-in Asc/Desc menu by sorting ratios numerically with Auto first/last.
-- Improves the wallet redemption placeholder and reduces the input width.
+- Adds `00:00` shortcut buttons beside visible time filter fields, with an old-layout start-time fallback.
+- Adds a 30-second auto-refresh toggle on the usage logs page.
+- Keeps API Key Group table sorting compatible with the site's built-in Asc/Desc menu when the table layout is present.
+- Keeps LinkAPI's CC Switch, Cherry Studio, and FluentRead one-click import templates compatible with the current token page.
 
 ## Privacy
 
-The script does not send page text, model names, logs, keys, prompts, or any other data to external services. Translation is glossary-based and runs locally in the browser. The model filter only string-matches text already loaded in the page DOM and hides non-matching rendered rows.
+The script does not send page text, model names, logs, keys, prompts, or any other data to external services. Translation is glossary-based, limited to stable website UI elements, and runs locally in the browser.
 
 ## Updates
 
