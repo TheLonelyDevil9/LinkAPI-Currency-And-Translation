@@ -1101,8 +1101,19 @@
     }
 
     function getTableContextText(table) {
-        const context = table.closest('section, article, [role="region"], [class*="card" i], [class*="panel" i], main') || table;
-        return normalizeWhitespace(context.textContent || table.textContent || '').toLowerCase();
+        const context = table.closest('section, article, [role="region"], [class*="card" i], [class*="panel" i]') || table;
+        const nearbyHeadings = [];
+        let sibling = table.previousElementSibling;
+        for (let hops = 0; sibling && hops < 6; hops += 1, sibling = sibling.previousElementSibling) {
+            if (sibling.matches?.('h1, h2, h3, [role="heading"]')) {
+                nearbyHeadings.push(sibling.textContent || '');
+            }
+            if (sibling.matches?.('table')) {
+                break;
+            }
+        }
+
+        return normalizeWhitespace(`${nearbyHeadings.join(' ')} ${context.textContent || table.textContent || ''}`).toLowerCase();
     }
 
     function isApiKeyTable(table) {
@@ -1415,7 +1426,9 @@
 
     function isSensitivePageControl(element) {
         const text = getElementLabelText(element);
-        return /api\s*key|\bkey\b|secret|token|password|sk-|prompt|message|content|redemption code|redeem|access\s*key|private|credential|authorization|bearer/.test(text);
+        const value = element instanceof HTMLSelectElement ? '' : String(element.value || '').toLowerCase();
+        return /api\s*key|\bkey\b|secret|token|password|sk-|prompt|message|content|redemption code|redeem|access\s*key|private|credential|authorization|bearer/.test(text)
+            || /(?:^|\s)(?:sk-|pk-)[a-z0-9_-]{8,}|bearer\s+[a-z0-9._-]{12,}|[a-z0-9_-]{32,}/i.test(value);
     }
 
     function isLikelyPersistentSettingLabel(text) {
