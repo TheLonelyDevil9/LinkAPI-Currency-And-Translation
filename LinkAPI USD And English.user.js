@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinkAPI USD And English
 // @namespace    https://violentmonkey.github.io/
-// @version      3.4
+// @version      3.6
 // @description  Replace CNY values with USD and clean up mixed Chinese text on LinkAPI
 // @author       TheLonelyDevil
 // @updateURL    https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translation/main/LinkAPI%20USD%20And%20English.user.js
@@ -739,6 +739,10 @@
                 width: auto !important;
                 white-space: nowrap !important;
             }
+
+            [data-${SCRIPT_ID}-sort-bound="true"] button[class*="data-popup-open:bg-accent"] {
+                pointer-events: none !important;
+            }
         `;
 
         if (!existingStyle) {
@@ -1218,6 +1222,63 @@
         return { tbody, rows };
     }
 
+    function isSortDropdownPopup(element) {
+        if (!(element instanceof HTMLElement)) {
+            return false;
+        }
+
+        if (!element.matches('[data-slot="dropdown-menu-content"], [data-slot="popover-content"], [role="menu"]')) {
+            return false;
+        }
+
+        const items = Array.from(element.querySelectorAll('button, [role="menuitem"], [data-slot="dropdown-menu-item"]'))
+            .map((item) => normalizeWhitespace(item.textContent || '').toLowerCase())
+            .filter(Boolean);
+        const text = normalizeWhitespace(element.textContent || '').toLowerCase();
+        const hasAsc = items.includes('asc') || /\basc\b/.test(text);
+        const hasDesc = items.includes('desc') || /\bdesc\b/.test(text);
+        const hasHide = items.includes('hide') || /\bhide\b/.test(text);
+        return hasAsc && hasDesc && hasHide;
+    }
+
+    function removeSortDropdownPopups(root = document) {
+        root.querySelectorAll('[data-slot="dropdown-menu-content"], [data-slot="popover-content"], [role="menu"]').forEach((element) => {
+            if (isSortDropdownPopup(element)) {
+                element.remove();
+            }
+        });
+    }
+
+    function stopNativeSortMenuEvent(event) {
+        const header = event.target?.closest?.('th, [role="columnheader"]');
+        if (!header || !isSortableHeader(header)) {
+            return;
+        }
+
+        event.preventDefault();
+        event.stopImmediatePropagation();
+    }
+
+    function handleTableHeaderKeydown(event) {
+        const header = event.currentTarget;
+        const table = header.closest('table');
+        if (!table || !isSortableHeader(header)) {
+            return;
+        }
+
+        if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            sortTableRows(table, header, getNextSortDirection(table, header));
+            return;
+        }
+
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'ContextMenu') {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        }
+    }
+
     function sortTableRows(table, header, direction, { persist = true } = {}) {
         const headers = getTableHeaders(table);
         const columnIndex = headers.indexOf(header);
@@ -1279,6 +1340,7 @@
         event.stopImmediatePropagation();
 
         sortTableRows(table, header, getNextSortDirection(table, header));
+        removeSortDropdownPopups();
     }
 
     function restorePersistedTableSort(table) {
@@ -1324,6 +1386,9 @@
                     header.title = 'Click to sort ascending, click again for descending';
                 }
 
+                header.addEventListener('pointerdown', stopNativeSortMenuEvent, true);
+                header.addEventListener('mousedown', stopNativeSortMenuEvent, true);
+                header.addEventListener('keydown', handleTableHeaderKeydown, true);
                 header.addEventListener('click', handleTableHeaderSort, true);
             }
 
@@ -1716,6 +1781,7 @@
         enhanceDashboardModelFilterDialog();
         enhanceLogAutoRefresh();
         enhanceTableSorting();
+        removeSortDropdownPopups();
         removeStaleApiInfoLabels();
         removeStaleModelFilterArtifacts();
     }
