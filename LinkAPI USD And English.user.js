@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinkAPI USD And English
 // @namespace    https://violentmonkey.github.io/
-// @version      3.3
+// @version      3.4
 // @description  Replace CNY values with USD and clean up mixed Chinese text on LinkAPI
 // @author       TheLonelyDevil
 // @updateURL    https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translation/main/LinkAPI%20USD%20And%20English.user.js
@@ -21,10 +21,12 @@
     const SCRIPT_ID = 'tld-linkapi-cny-usd';
     const STORAGE_KEY = `${SCRIPT_ID}:enabled`;
     const LOG_AUTO_REFRESH_STORAGE_KEY = `${SCRIPT_ID}:log-auto-refresh`;
+    const PAGE_SETTINGS_STORAGE_KEY = `${SCRIPT_ID}:page-settings:v1`;
     const HELPER_STYLE_ID = `${SCRIPT_ID}-helper-style`;
     const LINKAPI_CHATS_STORAGE_KEY = 'chats';
     const CNY_TO_USD_RATE = 0.146201;
     const LOG_AUTO_REFRESH_INTERVAL_MS = 30000;
+    const TABLE_SORT_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
     const CHAT_IMPORT_TEMPLATES = [
         ['CC Switch', 'ccswitch'],
         ['Cherry Studio', 'cherrystudio://providers/api-keys?v=1&data={cherryConfig}'],
@@ -231,10 +233,10 @@
     let observer = null;
     let queued = false;
     let enhancementQueued = false;
-    let apiKeySortTable = null;
     let toggleButton = null;
     let togglePositionQueued = false;
     let chatStorageWriteInProgress = false;
+    let pageSettingRestoreInProgress = false;
     let logAutoRefreshTimer = null;
     let logAutoRefreshCountdownTimer = null;
     let logAutoRefreshNextAt = 0;
@@ -772,6 +774,52 @@
         return String(value || '').toLowerCase().trim();
     }
 
+    function safeReadJsonStorage(key, fallback) {
+        try {
+            return JSON.parse(localStorage.getItem(key) || '') || fallback;
+        } catch (_) {
+            return fallback;
+        }
+    }
+
+    function safeWriteJsonStorage(key, value) {
+        try {
+            localStorage.setItem(key, JSON.stringify(value));
+        } catch (_) {
+            // Storage can be unavailable or full; page behavior should continue.
+        }
+    }
+
+    function getRouteSettingsKey() {
+        return `${window.location.origin}${window.location.pathname}`;
+    }
+
+    function getPageSettingsStore() {
+        const store = safeReadJsonStorage(PAGE_SETTINGS_STORAGE_KEY, {});
+        return store && typeof store === 'object' && !Array.isArray(store) ? store : {};
+    }
+
+    function writePageSettingsStore(store) {
+        safeWriteJsonStorage(PAGE_SETTINGS_STORAGE_KEY, store);
+    }
+
+    function getCurrentRouteSettings() {
+        const store = getPageSettingsStore();
+        const routeKey = getRouteSettingsKey();
+        const routeSettings = store[routeKey];
+        return routeSettings && typeof routeSettings === 'object' && !Array.isArray(routeSettings) ? routeSettings : {};
+    }
+
+    function updateCurrentRouteSettings(updater) {
+        const store = getPageSettingsStore();
+        const routeKey = getRouteSettingsKey();
+        const routeSettings = store[routeKey] && typeof store[routeKey] === 'object' && !Array.isArray(store[routeKey])
+            ? store[routeKey]
+            : {};
+        store[routeKey] = updater(routeSettings) || routeSettings;
+        writePageSettingsStore(store);
+    }
+
     function findRedemptionControlRow(input, wrapper) {
         let node = wrapper || input.parentElement;
         for (let depth = 0; node && depth < 5; depth += 1, node = node.parentElement) {
@@ -809,7 +857,12 @@
     }
 
     function setInputValue(input, value) {
-        const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+        const prototype = input instanceof HTMLSelectElement
+            ? HTMLSelectElement.prototype
+            : input instanceof HTMLTextAreaElement
+                ? HTMLTextAreaElement.prototype
+                : HTMLInputElement.prototype;
+        const nativeSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
         if (nativeSetter) {
             nativeSetter.call(input, value);
         } else {
@@ -1009,53 +1062,261 @@
         return { isAuto: false, value: Math.min(...ratios) };
     }
 
-    function sortApiKeyRows(table, ascending) {
-        const headers = Array.from(table.querySelectorAll('th'));
-        const groupHeader = headers.find((header) => normalizeWhitespace(header.textContent || '').toLowerCase().includes('group'));
-        const tbody = table.querySelector('tbody');
+    function getTableHeaders(table) {
+        return Array.from(table.querySelectorAll('thead th, thead [role="columnheader"], tr:first-child th, tr:first-child [role="columnheader"]'));
+    }
 
-        if (!groupHeader || !tbody) {
+    function getHeaderText(header) {
+        return normalizeWhitespace(header.textContent || header.getAttribute('aria-label') || header.title || '');
+    }
+
+    function getHeaderKey(header) {
+        const text = getHeaderText(header).toLowerCase();
+        const table = header.closest('table');
+        const headers = table ? getTableHeaders(table) : [];
+        return `${headers.indexOf(header)}:${text}`;
+    }
+
+    function getTableKey(table) {
+        const headerText = getTableHeaders(table).map((header) => getHeaderText(header).toLowerCase()).join('|');
+        const tableIndex = Array.from(document.querySelectorAll('table')).indexOf(table);
+        return `${tableIndex}:${headerText}`;
+    }
+
+    function getStoredTableSort(table) {
+        const tableSorts = getCurrentRouteSettings().tableSorts || {};
+        return tableSorts[getTableKey(table)] || null;
+    }
+
+    function rememberTableSort(table, header, direction) {
+        const tableKey = getTableKey(table);
+        const headerKey = getHeaderKey(header);
+        updateCurrentRouteSettings((routeSettings) => {
+            routeSettings.tableSorts = routeSettings.tableSorts && typeof routeSettings.tableSorts === 'object'
+                ? routeSettings.tableSorts
+                : {};
+            routeSettings.tableSorts[tableKey] = { headerKey, direction };
+            return routeSettings;
+        });
+    }
+
+    function getTableContextText(table) {
+        const context = table.closest('section, article, [role="region"], [class*="card" i], [class*="panel" i], main') || table;
+        return normalizeWhitespace(context.textContent || table.textContent || '').toLowerCase();
+    }
+
+    function isApiKeyTable(table) {
+        const text = normalizeWhitespace(table.textContent || '').toLowerCase();
+        const contextText = getTableContextText(table);
+        const headerText = getTableHeaders(table).map((header) => getHeaderText(header).toLowerCase()).join(' ');
+        const hasApiKeyContext = /api\s*keys?|token management|令牌管理/.test(contextText);
+        const hasApiKeyColumns = /provider|group|rate|multiplier|quota|models?|enabled|auto/.test(`${headerText} ${text}`);
+        return hasApiKeyContext && hasApiKeyColumns;
+    }
+
+    function isProviderMultiplierHeader(table, header) {
+        if (!isApiKeyTable(table)) {
+            return false;
+        }
+
+        const text = getHeaderText(header).toLowerCase();
+        return /^(?:group|provider|rate|multiplier|providers?)$/.test(text)
+            || (text.includes('group') && /[0-9]+(?:\.[0-9]+)?\s*[x×]/i.test(table.textContent || ''));
+    }
+
+    function compareProviderMultiplierCells(leftText, rightText, ascending) {
+        const leftRank = ratioRank(leftText);
+        const rightRank = ratioRank(rightText);
+
+        if (leftRank.isAuto || rightRank.isAuto) {
+            if (leftRank.isAuto && rightRank.isAuto) {
+                return 0;
+            }
+
+            return ascending ? (leftRank.isAuto ? -1 : 1) : (leftRank.isAuto ? 1 : -1);
+        }
+
+        const diff = leftRank.value - rightRank.value;
+        return ascending ? diff : -diff;
+    }
+
+    function getCellSortValue(text) {
+        const normalizedText = normalizeWhitespace(text).toLowerCase();
+        if (!normalizedText || normalizedText === '-' || normalizedText === 'n/a') {
+            return { empty: true, text: '' };
+        }
+
+        if (/^unlimited$/i.test(normalizedText)) {
+            return { empty: false, number: Number.POSITIVE_INFINITY, text: normalizedText };
+        }
+
+        const numericText = normalizedText.replace(/[$,%\s]/g, '').replace(/,/g, '');
+        if (/^[+-]?\d+(?:\.\d+)?x?$/.test(numericText)) {
+            return { empty: false, number: Number(numericText.replace(/x$/, '')), text: normalizedText };
+        }
+
+        return { empty: false, text: normalizedText };
+    }
+
+    function compareGenericCells(leftText, rightText, ascending) {
+        const leftValue = getCellSortValue(leftText);
+        const rightValue = getCellSortValue(rightText);
+
+        if (leftValue.empty || rightValue.empty) {
+            if (leftValue.empty && rightValue.empty) {
+                return 0;
+            }
+
+            return ascending ? (leftValue.empty ? 1 : -1) : (leftValue.empty ? -1 : 1);
+        }
+
+        if (Number.isFinite(leftValue.number) || Number.isFinite(rightValue.number) || leftValue.number === Number.POSITIVE_INFINITY || rightValue.number === Number.POSITIVE_INFINITY) {
+            const leftNumber = leftValue.number ?? Number.NaN;
+            const rightNumber = rightValue.number ?? Number.NaN;
+            if (Number.isFinite(leftNumber) || leftNumber === Number.POSITIVE_INFINITY) {
+                if (Number.isFinite(rightNumber) || rightNumber === Number.POSITIVE_INFINITY) {
+                    if (leftNumber === rightNumber) {
+                        return 0;
+                    }
+
+                    const diff = leftNumber - rightNumber;
+                    if (Number.isFinite(diff)) {
+                        return ascending ? diff : -diff;
+                    }
+                }
+            }
+        }
+
+        const diff = TABLE_SORT_COLLATOR.compare(leftValue.text, rightValue.text);
+        return ascending ? diff : -diff;
+    }
+
+    function getSortableRows(table) {
+        const tbody = table.tBodies?.[0] || table.querySelector('tbody');
+        if (!tbody) {
+            return { tbody: null, rows: [] };
+        }
+
+        const rows = Array.from(tbody.querySelectorAll(':scope > tr'));
+        rows.forEach((row, index) => {
+            if (!row.hasAttribute(`data-${SCRIPT_ID}-row-order`)) {
+                row.setAttribute(`data-${SCRIPT_ID}-row-order`, String(index));
+            }
+        });
+
+        return { tbody, rows };
+    }
+
+    function sortTableRows(table, header, direction, { persist = true } = {}) {
+        const headers = getTableHeaders(table);
+        const columnIndex = headers.indexOf(header);
+        const { tbody, rows } = getSortableRows(table);
+        const ascending = direction === 'asc';
+
+        if (!tbody || rows.length < 2 || columnIndex < 0) {
             return;
         }
 
-        const rows = Array.from(tbody.querySelectorAll('tr'));
-        const groupColumnIndex = Math.max(headers.indexOf(groupHeader), 0);
+        const providerMultiplierSort = isProviderMultiplierHeader(table, header);
 
         rows.sort((left, right) => {
-            const leftRank = ratioRank(left.children[groupColumnIndex]?.textContent || left.textContent || '');
-            const rightRank = ratioRank(right.children[groupColumnIndex]?.textContent || right.textContent || '');
-
-            if (leftRank.isAuto || rightRank.isAuto) {
-                if (leftRank.isAuto && rightRank.isAuto) {
-                    return 0;
-                }
-
-                return ascending ? (leftRank.isAuto ? -1 : 1) : (leftRank.isAuto ? 1 : -1);
+            const leftText = left.children[columnIndex]?.textContent || '';
+            const rightText = right.children[columnIndex]?.textContent || '';
+            const diff = providerMultiplierSort
+                ? compareProviderMultiplierCells(leftText, rightText, ascending)
+                : compareGenericCells(leftText, rightText, ascending);
+            if (diff !== 0) {
+                return diff;
             }
 
-            const diff = leftRank.value - rightRank.value;
-            return ascending ? diff : -diff;
+            return Number(left.getAttribute(`data-${SCRIPT_ID}-row-order`) || 0)
+                - Number(right.getAttribute(`data-${SCRIPT_ID}-row-order`) || 0);
         });
 
-        table.setAttribute(`data-${SCRIPT_ID}-api-sort-dir`, ascending ? 'asc' : 'desc');
+        table.setAttribute(`data-${SCRIPT_ID}-sort-key`, getHeaderKey(header));
+        table.setAttribute(`data-${SCRIPT_ID}-sort-dir`, direction);
+        headers.forEach((candidate) => candidate.removeAttribute('aria-sort'));
+        header.setAttribute('aria-sort', ascending ? 'ascending' : 'descending');
         rows.forEach((row) => tbody.appendChild(row));
+
+        if (persist) {
+            rememberTableSort(table, header, direction);
+        }
     }
 
-    function getApiKeyTables() {
-        return Array.from(document.querySelectorAll('table')).filter((table) => /api key|quota|group|enabled|auto/i.test(table.textContent || ''));
+    function getNextSortDirection(table, header) {
+        const headerKey = getHeaderKey(header);
+        const currentKey = table.getAttribute(`data-${SCRIPT_ID}-sort-key`);
+        const currentDirection = table.getAttribute(`data-${SCRIPT_ID}-sort-dir`);
+        return currentKey === headerKey && currentDirection === 'asc' ? 'desc' : 'asc';
     }
 
-    function enhanceApiKeySorting() {
-        for (const table of getApiKeyTables()) {
-            const headers = Array.from(table.querySelectorAll('th'));
-            const groupHeader = headers.find((header) => normalizeWhitespace(header.textContent || '').toLowerCase().includes('group'));
+    function isSortableHeader(header) {
+        return Boolean(getHeaderText(header))
+            && !header.querySelector('input[type="checkbox"], input[type="radio"]')
+            && Boolean(header.closest('table')?.querySelector('tbody tr'));
+    }
 
-            if (!groupHeader) {
-                continue;
+    function handleTableHeaderSort(event) {
+        const header = event.currentTarget;
+        const table = header.closest('table');
+        if (!table || !isSortableHeader(header)) {
+            return;
+        }
+
+        event.preventDefault();
+        event.stopImmediatePropagation();
+
+        sortTableRows(table, header, getNextSortDirection(table, header));
+    }
+
+    function restorePersistedTableSort(table) {
+        const storedSort = getStoredTableSort(table);
+        if (!storedSort?.headerKey || !storedSort?.direction) {
+            return;
+        }
+
+        const headers = getTableHeaders(table);
+        const header = headers.find((candidate) => getHeaderKey(candidate) === storedSort.headerKey);
+        if (!header || !isSortableHeader(header)) {
+            return;
+        }
+
+        const { rows } = getSortableRows(table);
+        const appliedKey = `${storedSort.headerKey}:${storedSort.direction}:${rows.length}`;
+        if (table.getAttribute(`data-${SCRIPT_ID}-sort-applied`) === appliedKey) {
+            return;
+        }
+
+        if (table.getAttribute(`data-${SCRIPT_ID}-sort-key`) === storedSort.headerKey
+            && table.getAttribute(`data-${SCRIPT_ID}-sort-dir`) === storedSort.direction) {
+            table.setAttribute(`data-${SCRIPT_ID}-sort-applied`, appliedKey);
+            return;
+        }
+
+        sortTableRows(table, header, storedSort.direction, { persist: false });
+        table.setAttribute(`data-${SCRIPT_ID}-sort-applied`, appliedKey);
+    }
+
+    function enhanceTableSorting() {
+        for (const table of document.querySelectorAll('table')) {
+            for (const header of getTableHeaders(table)) {
+                if (!isSortableHeader(header) || header.getAttribute(`data-${SCRIPT_ID}-sort-bound`) === 'true') {
+                    continue;
+                }
+
+                header.setAttribute(`data-${SCRIPT_ID}-sort-bound`, 'true');
+                header.style.cursor = 'pointer';
+                if (isProviderMultiplierHeader(table, header)) {
+                    header.title = 'Click to sort by provider multiplier';
+                } else if (!header.title) {
+                    header.title = 'Click to sort ascending, click again for descending';
+                }
+
+                header.addEventListener('click', handleTableHeaderSort, true);
             }
 
-            table.setAttribute(`data-${SCRIPT_ID}-api-sort`, 'true');
-            groupHeader.title = 'Use the built-in Asc/Desc menu to sort by cost ratio';
+            restorePersistedTableSort(table);
         }
     }
 
@@ -1079,35 +1340,187 @@
         });
     }
 
-    function rememberApiKeySortTable(event) {
-        const header = event.target.closest?.('th');
-        if (!header || !normalizeWhitespace(header.textContent || '').toLowerCase().includes('group')) {
+    function escapeCssIdentifier(value) {
+        if (window.CSS?.escape) {
+            return CSS.escape(value);
+        }
+
+        return String(value).replace(/["\\]/g, '\\$&');
+    }
+
+    function getElementLabelText(element) {
+        const explicitLabels = element.id ? Array.from(document.querySelectorAll(`label[for="${escapeCssIdentifier(element.id)}"]`)) : [];
+        const wrappingLabel = element.closest('label');
+        const ariaLabelledBy = (element.getAttribute('aria-labelledby') || '')
+            .split(/\s+/)
+            .map((id) => document.getElementById(id)?.textContent || '')
+            .join(' ');
+        const nearbyText = [
+            element.getAttribute('aria-label'),
+            element.name,
+            element.id,
+            element.placeholder,
+            explicitLabels.map((label) => label.textContent || '').join(' '),
+            wrappingLabel?.textContent,
+            ariaLabelledBy
+        ].filter(Boolean).join(' ');
+
+        return normalizeWhitespace(nearbyText).toLowerCase();
+    }
+
+    function shouldPersistPageControl(element) {
+        if (!(element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement)) {
+            return false;
+        }
+
+        if (element.disabled || element.readOnly) {
+            return false;
+        }
+
+        if (element.closest(`#${SCRIPT_ID}-toggle, .${SCRIPT_ID}-log-refresh, .${SCRIPT_ID}-time-shortcut`)) {
+            return false;
+        }
+
+        if (isSensitivePageControl(element)) {
+            return false;
+        }
+
+        if (element instanceof HTMLInputElement) {
+            const type = normalizeInputValue(element.type || 'text');
+            if (/^(?:button|submit|reset|file|password|hidden)$/i.test(type)) {
+                return false;
+            }
+
+            if (/^(?:checkbox|radio)$/i.test(type)) {
+                return true;
+            }
+
+            if (/^(?:number|range|date|time|datetime-local|month|week|color)$/i.test(type)) {
+                return true;
+            }
+
+            if (/^(?:text|search|tel|url|email)$/i.test(type)) {
+                return isLikelyPersistentSettingLabel(getElementLabelText(element));
+            }
+
+            return isLikelyPersistentSettingLabel(getElementLabelText(element));
+        }
+
+        if (element instanceof HTMLTextAreaElement) {
+            return false;
+        }
+
+        return Boolean(getPageControlKey(element));
+    }
+
+    function isSensitivePageControl(element) {
+        const text = getElementLabelText(element);
+        return /api\s*key|\bkey\b|secret|token|password|sk-|prompt|message|content|redemption code|redeem|access\s*key|private|credential|authorization|bearer/.test(text);
+    }
+
+    function isLikelyPersistentSettingLabel(text) {
+        return /filter|search|query|page|size|limit|sort|order|mode|type|status|enable|disable|toggle|option|view|show|hide|from|to|start|end|min|max|date|time|interval|range|group|model|provider|quota|rate|multiplier|refresh|auto|days|week|month/.test(normalizeWhitespace(text).toLowerCase());
+    }
+
+    function getPageControlKey(element) {
+        const label = getElementLabelText(element);
+        if (!label) {
+            return '';
+        }
+
+        const type = element instanceof HTMLInputElement ? normalizeInputValue(element.type || 'text') : element.tagName.toLowerCase();
+        const form = element.closest('form');
+        const formLabel = form
+            ? normalizeWhitespace(form.getAttribute('aria-label') || form.id || form.className || '').toLowerCase()
+            : '';
+        const siblingIndex = Array.from(document.querySelectorAll(element.tagName.toLowerCase())).indexOf(element);
+        return `${type}:${formLabel}:${label}:${siblingIndex}`;
+    }
+
+    function readPageControlValue(element) {
+        if (element instanceof HTMLInputElement && (element.type === 'checkbox' || element.type === 'radio')) {
+            return element.checked;
+        }
+
+        return element.value;
+    }
+
+    function applyPageControlValue(element, value) {
+        if (element instanceof HTMLInputElement && (element.type === 'checkbox' || element.type === 'radio')) {
+            if (element.checked !== Boolean(value)) {
+                element.checked = Boolean(value);
+                element.dispatchEvent(new Event('input', { bubbles: true }));
+                element.dispatchEvent(new Event('change', { bubbles: true }));
+            }
             return;
         }
 
-        const table = header.closest('table');
-        if (table && getApiKeyTables().includes(table)) {
-            apiKeySortTable = table;
+        if (typeof value !== 'string' || element.value === value) {
+            return;
+        }
+
+        setInputValue(element, value);
+    }
+
+    function rememberPageControlValue(element) {
+        if (pageSettingRestoreInProgress || !shouldPersistPageControl(element)) {
+            return;
+        }
+
+        const key = getPageControlKey(element);
+        const value = readPageControlValue(element);
+        updateCurrentRouteSettings((routeSettings) => {
+            routeSettings.controls = routeSettings.controls && typeof routeSettings.controls === 'object'
+                ? routeSettings.controls
+                : {};
+            routeSettings.controls[key] = value;
+            return routeSettings;
+        });
+    }
+
+    function restorePageControlValues() {
+        const controls = getCurrentRouteSettings().controls || {};
+        if (!controls || typeof controls !== 'object') {
+            return;
+        }
+
+        pageSettingRestoreInProgress = true;
+        try {
+            for (const element of document.querySelectorAll('input, select, textarea')) {
+                if (!shouldPersistPageControl(element)) {
+                    continue;
+                }
+
+                const key = getPageControlKey(element);
+                const restoreMark = `${getRouteSettingsKey()}::${key}`;
+                if (element.getAttribute(`data-${SCRIPT_ID}-setting-restored`) === restoreMark) {
+                    continue;
+                }
+
+                if (Object.prototype.hasOwnProperty.call(controls, key)) {
+                    applyPageControlValue(element, controls[key]);
+                    element.setAttribute(`data-${SCRIPT_ID}-setting-restored`, restoreMark);
+                }
+            }
+        } finally {
+            pageSettingRestoreInProgress = false;
         }
     }
 
-    function handleNativeSortMenu(event) {
-        const item = event.target.closest?.('[role="menuitem"], [cmdk-item], button, div');
-        if (!item) {
+    function handlePageControlChange(event) {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement)) {
             return;
         }
 
-        const label = normalizeWhitespace(item.textContent || '').toLowerCase();
-        if (label !== 'asc' && label !== 'desc') {
-            return;
+        if (event.type === 'input' && target instanceof HTMLInputElement) {
+            const type = normalizeInputValue(target.type || 'text');
+            if (!/^(?:checkbox|radio|range|color|number)$/i.test(type)) {
+                return;
+            }
         }
 
-        const table = getApiKeyTables()[0] || apiKeySortTable;
-        if (!table) {
-            return;
-        }
-
-        setTimeout(() => sortApiKeyRows(table, label === 'asc'), 0);
+        rememberPageControlValue(target);
     }
 
     function isLogPage() {
@@ -1285,10 +1698,11 @@
 
         installHelperStyles();
         enhanceRedemptionInput();
+        restorePageControlValues();
         enhanceTimeInputs();
         enhanceDashboardModelFilterDialog();
         enhanceLogAutoRefresh();
-        enhanceApiKeySorting();
+        enhanceTableSorting();
         removeStaleApiInfoLabels();
         removeStaleModelFilterArtifacts();
     }
@@ -1543,8 +1957,8 @@
         repairStoredChatConfig();
         installToggle();
         installObserver();
-        document.addEventListener('click', rememberApiKeySortTable, true);
-        document.addEventListener('click', handleNativeSortMenu, true);
+        document.addEventListener('change', handlePageControlChange, true);
+        document.addEventListener('input', handlePageControlChange, true);
         processRoot();
         processAccessibleFrames();
         enhancePage();
