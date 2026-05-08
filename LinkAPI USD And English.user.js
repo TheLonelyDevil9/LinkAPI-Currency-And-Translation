@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinkAPI USD And English
 // @namespace    https://violentmonkey.github.io/
-// @version      3.1
+// @version      3.2
 // @description  Replace CNY values with USD and clean up mixed Chinese text on LinkAPI
 // @author       TheLonelyDevil
 // @updateURL    https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translation/main/LinkAPI%20USD%20And%20English.user.js
@@ -714,6 +714,32 @@
                 letter-spacing: 0;
                 white-space: nowrap;
             }
+
+            [data-${SCRIPT_ID}-redeem="true"] {
+                width: 100% !important;
+                max-width: 560px !important;
+            }
+
+            [data-${SCRIPT_ID}-redeem-input-wrap="true"] {
+                flex: 0 1 560px !important;
+                max-width: 100% !important;
+            }
+
+            [data-${SCRIPT_ID}-redeem-wrap="true"] {
+                box-sizing: border-box !important;
+                display: flex !important;
+                align-items: center !important;
+                justify-content: flex-start !important;
+                flex-wrap: wrap !important;
+                gap: 12px !important;
+            }
+
+            [data-${SCRIPT_ID}-redeem-wrap="true"] button {
+                flex: 0 0 auto !important;
+                margin-left: 0 !important;
+                width: auto !important;
+                white-space: nowrap !important;
+            }
         `;
 
         document.documentElement.appendChild(style);
@@ -745,6 +771,42 @@
 
     function normalizeInputValue(value) {
         return String(value || '').toLowerCase().trim();
+    }
+
+    function findRedemptionControlRow(input, wrapper) {
+        let node = wrapper || input.parentElement;
+        for (let depth = 0; node && depth < 5; depth += 1, node = node.parentElement) {
+            const inputCount = node.querySelectorAll('input').length;
+            const buttonCount = node.querySelectorAll('button').length;
+            if (inputCount <= 2 && buttonCount > 0 && buttonCount <= 3) {
+                return node;
+            }
+        }
+
+        return wrapper;
+    }
+
+    function enhanceRedemptionInput() {
+        for (const input of findInputs({ visibleOnly: false })) {
+            const placeholder = normalizeInputValue(input.placeholder);
+            if (!placeholder.includes('redemption code')) {
+                continue;
+            }
+
+            input.placeholder = 'Enter your redemption code here';
+            input.setAttribute(`data-${SCRIPT_ID}-redeem`, 'true');
+            const wrapper = input.closest('div');
+            if (wrapper) {
+                const controlRow = findRedemptionControlRow(input, wrapper);
+                if (controlRow) {
+                    controlRow.setAttribute(`data-${SCRIPT_ID}-redeem-wrap`, 'true');
+                }
+
+                if (wrapper !== controlRow) {
+                    wrapper.setAttribute(`data-${SCRIPT_ID}-redeem-input-wrap`, 'true');
+                }
+            }
+        }
     }
 
     function setInputValue(input, value) {
@@ -1203,6 +1265,7 @@
         }
 
         installHelperStyles();
+        enhanceRedemptionInput();
         enhanceTimeInputs();
         enhanceDashboardModelFilterDialog();
         enhanceLogAutoRefresh();
