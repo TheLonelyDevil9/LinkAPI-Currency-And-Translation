@@ -9,3 +9,6 @@
 - Keep the redemption-code input/button compaction when supporting old and new layouts. The new layout needs the redemption input capped around `560px` and the redeem button forced back to compact/auto width; rollback compatibility work once removed this helper and made the control stretch again.
 - Hide or avoid the floating `USD + EN` pill on Model Marketplace/pricing/model listing surfaces because it can interfere with that UI.
 - Keep CC Switch, Cherry Studio, and FluentRead one-click import compatibility intact when changing token-page behavior.
+- Table sorting must be scoped to the clicked table/header. Provider multiplier sorting belongs only on the API Key Group/provider column; other headers should use normal first-click ascending, second-click descending sorting without relying on LinkAPI's Asc/Desc menu.
+- Persist page settings conservatively in localStorage: remember route-scoped filters, sort state, page controls, and toggles, but do not store API keys, tokens, prompts, messages, redemption codes, credentials, or textarea content.
+- Before planning or editing, read `lessons.md` and apply its history-derived guardrails; do not repeat known project mistakes.
