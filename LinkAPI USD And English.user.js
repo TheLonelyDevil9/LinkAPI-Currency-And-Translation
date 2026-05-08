@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinkAPI USD And English
 // @namespace    https://violentmonkey.github.io/
-// @version      3.2
+// @version      3.3
 // @description  Replace CNY values with USD and clean up mixed Chinese text on LinkAPI
 // @author       TheLonelyDevil
 // @updateURL    https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translation/main/LinkAPI%20USD%20And%20English.user.js
@@ -619,11 +619,8 @@
     }
 
     function installHelperStyles() {
-        if (document.getElementById(HELPER_STYLE_ID)) {
-            return;
-        }
-
-        const style = document.createElement('style');
+        const existingStyle = document.getElementById(HELPER_STYLE_ID);
+        const style = existingStyle || document.createElement('style');
         style.id = HELPER_STYLE_ID;
         style.textContent = `
             .${SCRIPT_ID}-midnight-button,
@@ -742,7 +739,9 @@
             }
         `;
 
-        document.documentElement.appendChild(style);
+        if (!existingStyle) {
+            document.documentElement.appendChild(style);
+        }
     }
 
     function isElementVisible(element) {
@@ -861,7 +860,7 @@
     }
 
     function findStartTimeInput() {
-        return findInputs({ visibleOnly: false }).find((input) => {
+        const candidates = findInputs({ visibleOnly: false }).filter((input) => {
             if (!inputLooksLikeTimeSelector(input)) {
                 return false;
             }
@@ -876,7 +875,14 @@
 
             return /start|begin|from|开始/.test(labels)
                 || /^\d{4}-\d{2}-\d{2}\s+00:/.test(normalizeInputValue(input.value));
-        }) || null;
+        });
+
+        if (candidates.length > 0) {
+            return candidates[0];
+        }
+
+        const timeInputs = findInputs({ visibleOnly: false }).filter(inputLooksLikeTimeSelector);
+        return timeInputs[0] || null;
     }
 
     function findTimeShortcutInsertionPoint() {
@@ -1057,6 +1063,19 @@
         document.querySelectorAll(`.${SCRIPT_ID}-api-info-label`).forEach((label) => label.remove());
         document.querySelectorAll(`button[data-${SCRIPT_ID}-api-info-button="true"]`).forEach((button) => {
             button.removeAttribute(`data-${SCRIPT_ID}-api-info-button`);
+        });
+    }
+
+    function removeStaleModelFilterArtifacts() {
+        try {
+            localStorage.removeItem(`${SCRIPT_ID}:model-filter`);
+        } catch (_) {
+            // Storage can be unavailable in hardened browser contexts.
+        }
+
+        document.querySelectorAll(`.${SCRIPT_ID}-model-filter, .${SCRIPT_ID}-dialog-model-filter-wrap`).forEach((element) => element.remove());
+        document.querySelectorAll(`.${SCRIPT_ID}-hidden-by-model-filter`).forEach((element) => {
+            element.classList.remove(`${SCRIPT_ID}-hidden-by-model-filter`);
         });
     }
 
@@ -1271,6 +1290,7 @@
         enhanceLogAutoRefresh();
         enhanceApiKeySorting();
         removeStaleApiInfoLabels();
+        removeStaleModelFilterArtifacts();
     }
 
     function queueEnhancements() {
