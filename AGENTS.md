@@ -4,5 +4,6 @@
 - After pushing a userscript fix, verify the raw GitHub URL serves the new `@version` before telling the user to update.
 - Usage logs can render on reverted/old layouts without the exact `/console/log` path. Detect that page by route and by stable page text/table headings.
 - Do not inject inline `00:00` buttons into the usage logs compact filter grid. They overlap Group/Request ID fields. Use the separate old-layout start-time fallback instead.
+- Keep the redemption-code input/button compaction when supporting old and new layouts. The new layout needs the redemption input capped around `560px` and the redeem button forced back to compact/auto width; rollback compatibility work once removed this helper and made the control stretch again.
 - Hide or avoid the floating `USD + EN` pill on Model Marketplace/pricing/model listing surfaces because it can interfere with that UI.
 - Keep CC Switch, Cherry Studio, and FluentRead one-click import compatibility intact when changing token-page behavior.
