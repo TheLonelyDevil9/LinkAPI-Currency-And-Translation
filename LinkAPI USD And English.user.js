@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinkAPI USD And English
 // @namespace    https://violentmonkey.github.io/
-// @version      3.8
+// @version      3.9
 // @description  Replace CNY values with USD and clean up mixed Chinese text on LinkAPI
 // @author       TheLonelyDevil
 // @updateURL    https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translation/main/LinkAPI%20USD%20And%20English.user.js
@@ -2045,17 +2045,32 @@
     }
 
     function isLogPage() {
-        if (/\/console\/log(?:\/|$)/.test(window.location.pathname)) {
+        const path = window.location.pathname.toLowerCase();
+        if (/\/(?:console\/log|usage-logs)(?:\/|$)/.test(path)) {
             return true;
         }
 
-        const pageText = normalizeWhitespace(document.body?.textContent || '').toLowerCase();
-        if (!/used quota|rpm|tpm|usage logs|time\/request|request id|tokens|consume/.test(pageText)) {
+        if (/\/(?:console\/dashboard|dashboard)(?:\/|$)/.test(path)) {
             return false;
         }
 
-        return Boolean(document.querySelector('input[value*=":"]'))
-            && /time|tokens|group|type|model/.test(pageText);
+        const root = document.querySelector('main, [role="main"]') || document.body;
+        const pageText = normalizeWhitespace(root?.textContent || '').toLowerCase();
+        const headingText = normalizeWhitespace(Array.from((root || document).querySelectorAll?.('h1, h2, [role="heading"]') || [])
+            .map((heading) => heading.textContent || '')
+            .join(' ')).toLowerCase();
+
+        if (/dashboard|model call analytics|filter dashboard models/.test(headingText)) {
+            return false;
+        }
+
+        if (!/(?:common logs|usage logs|task logs|used quota|rpm|tpm|time\/request|request id|consume)/.test(pageText)) {
+            return false;
+        }
+
+        return Boolean(Array.from((root || document).querySelectorAll?.('input') || [])
+            .some((input) => String(input.value || '').includes(':')))
+            && /(?:time|tokens|group|type|model)/.test(pageText);
     }
 
     function isModelMarketplacePage() {

@@ -83,6 +83,11 @@ The durable pattern is that LinkAPI UI details are unstable. Future work should 
 
     New API exposes request counts and token usage separately through same-origin `/api/data` and `/api/data/self` responses. Use `token_used` for total-token displays and guard against mismatched dashboard payloads instead of inferring tokens from counts or chart labels.
 
+14. Dashboard routes must not inherit Usage Logs behavior from sidebar text.
+    Evidence: 2026-05-09 dashboard midnight shortcut regression.
+
+    The new UI sidebar keeps Usage Logs labels visible while the user is on `/dashboard/models`. Log-page detection must be route-aware and scoped to main content, or dashboard filter dialogs lose their inline `00:00` shortcuts.
+
 ## Agent-First Checks
 
 - Read `AGENTS.md` and this file before planning or editing.

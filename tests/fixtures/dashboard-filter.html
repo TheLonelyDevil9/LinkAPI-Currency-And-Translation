@@ -50,6 +50,11 @@
   </style>
 </head>
 <body>
+  <aside aria-label="Primary navigation">
+    <a href="/dashboard/models">Dashboard</a>
+    <a href="/usage-logs/common">Usage Logs</a>
+    <a href="/usage-logs/task">Task Logs</a>
+  </aside>
   <main>
     <h1>Dashboard</h1>
     <section aria-label="Model analytics">
@@ -95,6 +100,8 @@
   </main>
 
   <script>
+    history.replaceState({}, '', '/dashboard/models');
+
     document.querySelectorAll('[data-menu]').forEach((trigger) => {
       trigger.addEventListener('click', () => {
         const menu = document.getElementById(trigger.dataset.menu);

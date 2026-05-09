@@ -303,12 +303,16 @@ async function runDashboardAssertions(client) {
     await loadFixture(client, `${globalThis.__smokeOrigin}/tests/fixtures/dashboard-filter.html`);
     logDebug('dashboard initial read');
     const initial = await evaluate(client, `(() => ({
+        pathname: window.location.pathname,
         buttons: document.querySelectorAll('[role="dialog"] .tld-linkapi-cny-usd-midnight-button').length,
-        fallback: Boolean(document.getElementById('tld-linkapi-cny-usd-time-shortcut'))
+        fallback: Boolean(document.getElementById('tld-linkapi-cny-usd-time-shortcut')),
+        logHelper: Boolean(document.getElementById('tld-linkapi-cny-usd-log-helper'))
     }))()`);
     logDebug('dashboard initial', JSON.stringify(initial));
+    assert(initial.pathname === '/dashboard/models', 'Dashboard fixture did not run on the live dashboard route shape');
     assert(initial.buttons >= 2, 'Dashboard custom time triggers did not receive 00:00 buttons');
     assert(!initial.fallback, 'Dashboard rendered fallback despite visible inline shortcuts');
+    assert(!initial.logHelper, 'Dashboard was misdetected as Usage Logs because of sidebar text');
 
     logDebug('dashboard click midnight');
     await evaluate(client, `document.getElementById('dashboard-start-trigger').parentElement.querySelector('.tld-linkapi-cny-usd-midnight-button').click()`);

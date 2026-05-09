@@ -6,6 +6,7 @@
 - Do not inject inline `00:00` buttons into the usage logs compact filter grid. They overlap Group/Request ID fields. Use the shared log helper cluster with `00:00 start` instead.
 - Keep the old-layout `00:00 start` fallback tolerant of unlabeled time inputs; some layouts expose date/time values without stable start labels.
 - Keep dashboard custom time controls covered through the time-target adapter when a real associated input or visible midnight option exists.
+- Do not let sidebar labels such as Usage Logs make dashboard routes count as log pages; `/dashboard/*` must keep inline dashboard filter helpers.
 - Dashboard Model Call Analytics token totals must come from `token_used` in same-origin `/api/data` or `/api/data/self` responses, not from request counts or chart text inference.
 - When removing helper features, also clean stale DOM classes, storage keys, and helper stylesheet rules. The removed model filter once left `.tld-linkapi-cny-usd-hidden-by-model-filter` and `tld-linkapi-cny-usd:model-filter` behind, which could keep models such as GPT-5.5 hidden after updates.
 - Keep the redemption-code input/button compaction when supporting old and new layouts. The new layout needs the redemption input capped around `560px` and the redeem button forced back to compact/auto width; rollback compatibility work once removed this helper and made the control stretch again.
