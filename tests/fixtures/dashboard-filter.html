@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>LinkAPI Dashboard Filter Fixture</title>
+  <style>
+    body {
+      margin: 0;
+      background: #111;
+      color: #f4f4f5;
+      font: 14px/1.4 system-ui, sans-serif;
+    }
+
+    main {
+      padding: 24px;
+    }
+
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin: 12px 0;
+    }
+
+    input,
+    button {
+      min-height: 30px;
+      border: 1px solid #52525b;
+      border-radius: 6px;
+      background: #27272a;
+      color: #fafafa;
+      padding: 0 10px;
+    }
+
+    .popover {
+      position: absolute;
+      z-index: 20;
+      display: none;
+      flex-direction: column;
+      gap: 4px;
+      padding: 8px;
+      border: 1px solid #52525b;
+      background: #18181b;
+    }
+
+    .popover[data-open="true"] {
+      display: flex;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Dashboard</h1>
+    <section aria-label="Model analytics">
+      <header class="row">
+        <div>Model Call Analytics</div>
+        <span>Total: 24,866</span>
+      </header>
+      <div class="row">Call Count Distribution <button>Trend</button><button>Proportion</button><button>Top</button></div>
+      <div class="row">Call Trend</div>
+      <div class="row">Call Count Ranking</div>
+    </section>
+    <section role="dialog" aria-label="Filter Dashboard Models">
+      <h2>Filter Dashboard Models</h2>
+      <div class="row">
+        <button>1 Day</button>
+        <button>7 Days</button>
+        <button>14 Days</button>
+        <button>29 Days</button>
+      </div>
+      <div class="row">
+        <label>Start Time
+          <input id="dashboard-start-hidden" aria-label="Dashboard Start Time" value="2026-04-10 11:47:00" style="display:none">
+          <button id="dashboard-start-trigger" type="button" aria-label="Dashboard Start Time" data-menu="dashboard-start-menu">11:47 AM</button>
+        </label>
+      </div>
+      <div class="row">
+        <label>End Time
+          <input id="dashboard-end-hidden" aria-label="Dashboard End Time" value="2026-05-09 11:47:00" style="display:none">
+          <button id="dashboard-end-trigger" type="button" aria-label="Dashboard End Time" data-menu="dashboard-end-menu">11:47 AM</button>
+        </label>
+      </div>
+      <div class="row">Time Granularity <button>Day</button></div>
+    </section>
+
+    <div id="dashboard-start-menu" class="popover" role="listbox">
+      <button role="option" data-value="00:00:00">00:00</button>
+      <button role="option" data-value="11:47:00">11:47 AM</button>
+    </div>
+    <div id="dashboard-end-menu" class="popover" role="listbox">
+      <button role="option" data-value="00:00:00">00:00</button>
+      <button role="option" data-value="11:47:00">11:47 AM</button>
+    </div>
+  </main>
+
+  <script>
+    document.querySelectorAll('[data-menu]').forEach((trigger) => {
+      trigger.addEventListener('click', () => {
+        const menu = document.getElementById(trigger.dataset.menu);
+        document.querySelectorAll('.popover').forEach((candidate) => {
+          candidate.dataset.open = String(candidate === menu && candidate.dataset.open !== 'true');
+        });
+      });
+    });
+
+    document.querySelectorAll('[role="option"]').forEach((option) => {
+      option.addEventListener('click', () => {
+        const menu = option.closest('.popover');
+        const trigger = document.querySelector(`[data-menu="${menu.id}"]`);
+        const hiddenInput = menu.id === 'dashboard-start-menu'
+          ? document.getElementById('dashboard-start-hidden')
+          : document.getElementById('dashboard-end-hidden');
+        hiddenInput.value = `2026-05-09 ${option.dataset.value}`;
+        trigger.textContent = option.textContent.trim();
+        menu.dataset.open = 'false';
+      });
+    });
+  </script>
+</body>
+</html>

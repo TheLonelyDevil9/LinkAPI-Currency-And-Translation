@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinkAPI USD And English
 // @namespace    https://violentmonkey.github.io/
-// @version      3.6
+// @version      3.8
 // @description  Replace CNY values with USD and clean up mixed Chinese text on LinkAPI
 // @author       TheLonelyDevil
 // @updateURL    https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translation/main/LinkAPI%20USD%20And%20English.user.js
@@ -241,6 +241,7 @@
     let logAutoRefreshCountdownTimer = null;
     let logAutoRefreshNextAt = 0;
     let lastRouteKey = '';
+    let dashboardAnalyticsTokenSnapshot = null;
 
     function toNumber(rawAmount) {
         return Number(rawAmount.replace(/,/g, ''));
@@ -263,6 +264,203 @@
 
     function normalizeWhitespace(text) {
         return text.replace(/\s+/g, ' ').trim();
+    }
+
+    function parseMetricNumber(value) {
+        if (typeof value === 'number') {
+            return Number.isFinite(value) ? value : null;
+        }
+
+        if (typeof value === 'string') {
+            const normalized = value.replace(/,/g, '').trim();
+            if (!normalized) {
+                return null;
+            }
+
+            const parsed = Number(normalized);
+            return Number.isFinite(parsed) ? parsed : null;
+        }
+
+        return null;
+    }
+
+    function formatInteger(value) {
+        return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
+    }
+
+    function getMetricValue(record, keys) {
+        if (!record || typeof record !== 'object') {
+            return null;
+        }
+
+        for (const key of keys) {
+            if (!Object.prototype.hasOwnProperty.call(record, key)) {
+                continue;
+            }
+
+            const parsed = parseMetricNumber(record[key]);
+            if (parsed !== null) {
+                return parsed;
+            }
+        }
+
+        return null;
+    }
+
+    function getDashboardDataItems(payload) {
+        if (Array.isArray(payload)) {
+            return payload;
+        }
+
+        if (!payload || typeof payload !== 'object') {
+            return null;
+        }
+
+        if (Array.isArray(payload.data)) {
+            return payload.data;
+        }
+
+        if (payload.data && typeof payload.data === 'object' && Array.isArray(payload.data.data)) {
+            return payload.data.data;
+        }
+
+        return null;
+    }
+
+    function isDashboardAnalyticsDataUrl(rawUrl) {
+        if (!rawUrl) {
+            return false;
+        }
+
+        try {
+            const url = new URL(rawUrl instanceof URL ? rawUrl.href : String(rawUrl), window.location.href);
+            if (url.origin !== window.location.origin) {
+                return false;
+            }
+
+            const path = url.pathname.replace(/\/+$/, '');
+            return path === '/api/data' || path === '/api/data/self';
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function updateDashboardAnalyticsSnapshotFromPayload(payload, sourceUrl) {
+        const data = getDashboardDataItems(payload);
+        if (!data) {
+            return;
+        }
+
+        let sawTokenMetric = false;
+        let sawCountMetric = false;
+        let totalTokens = 0;
+        let totalCount = 0;
+
+        data.forEach((item) => {
+            const tokenValue = getMetricValue(item, ['token_used']);
+            if (tokenValue !== null) {
+                sawTokenMetric = true;
+                totalTokens += tokenValue;
+            }
+
+            const countValue = getMetricValue(item, ['count', 'request_count', 'requestCount']);
+            if (countValue !== null) {
+                sawCountMetric = true;
+                totalCount += countValue;
+            }
+        });
+
+        dashboardAnalyticsTokenSnapshot = sawTokenMetric
+            ? {
+                sourceUrl,
+                totalTokens,
+                totalCount: sawCountMetric ? totalCount : null,
+                updatedAt: Date.now()
+            }
+            : null;
+
+        queueEnhancements();
+    }
+
+    function inspectDashboardAnalyticsJson(payload, sourceUrl) {
+        if (!isDashboardAnalyticsDataUrl(sourceUrl)) {
+            return;
+        }
+
+        updateDashboardAnalyticsSnapshotFromPayload(payload, sourceUrl);
+    }
+
+    function inspectDashboardAnalyticsText(text, sourceUrl) {
+        if (!isDashboardAnalyticsDataUrl(sourceUrl) || typeof text !== 'string' || !text.trim()) {
+            return;
+        }
+
+        try {
+            inspectDashboardAnalyticsJson(JSON.parse(text), sourceUrl);
+        } catch (_) {
+            // Ignore non-JSON or partial responses.
+        }
+    }
+
+    function installDashboardAnalyticsDataHook() {
+        if (window.__tldLinkApiDashboardAnalyticsHookInstalled) {
+            return;
+        }
+
+        window.__tldLinkApiDashboardAnalyticsHookInstalled = true;
+
+        const nativeFetch = window.fetch;
+        if (typeof nativeFetch === 'function') {
+            window.fetch = function tldLinkApiFetch(input, init) {
+                const requestedUrl = typeof input === 'string' || input instanceof URL
+                    ? input
+                    : input?.url;
+
+                return nativeFetch.apply(this, arguments).then((response) => {
+                    const responseUrl = response?.url || requestedUrl;
+                    if (isDashboardAnalyticsDataUrl(responseUrl)) {
+                        response.clone().json()
+                            .then((payload) => inspectDashboardAnalyticsJson(payload, responseUrl))
+                            .catch(() => {});
+                    }
+
+                    return response;
+                });
+            };
+        }
+
+        if (typeof XMLHttpRequest === 'undefined') {
+            return;
+        }
+
+        const nativeOpen = XMLHttpRequest.prototype.open;
+        const nativeSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function tldLinkApiXhrOpen(method, url) {
+            this.__tldLinkApiDashboardAnalyticsUrl = url;
+            return nativeOpen.apply(this, arguments);
+        };
+
+        XMLHttpRequest.prototype.send = function tldLinkApiXhrSend() {
+            if (isDashboardAnalyticsDataUrl(this.__tldLinkApiDashboardAnalyticsUrl)) {
+                this.addEventListener('loadend', () => {
+                    const responseUrl = this.responseURL || this.__tldLinkApiDashboardAnalyticsUrl;
+                    if (!isDashboardAnalyticsDataUrl(responseUrl) || this.status < 200 || this.status >= 300) {
+                        return;
+                    }
+
+                    if (this.responseType === 'json') {
+                        inspectDashboardAnalyticsJson(this.response, responseUrl);
+                        return;
+                    }
+
+                    if (!this.responseType || this.responseType === 'text') {
+                        inspectDashboardAnalyticsText(this.responseText, responseUrl);
+                    }
+                }, { once: true });
+            }
+
+            return nativeSend.apply(this, arguments);
+        };
     }
 
     function normalizeChatConfigText(text) {
@@ -675,7 +873,7 @@
                 box-sizing: border-box !important;
                 display: inline-flex !important;
                 align-items: center !important;
-                margin: 6px 8px 6px 0 !important;
+                margin: 0 !important;
                 vertical-align: middle !important;
             }
 
@@ -691,7 +889,18 @@
                 align-items: center !important;
                 flex-wrap: nowrap !important;
                 gap: 8px !important;
+                margin: 0 !important;
+                vertical-align: middle !important;
+            }
+
+            .${SCRIPT_ID}-log-helper {
+                box-sizing: border-box !important;
+                display: inline-flex !important;
+                align-items: center !important;
+                flex-wrap: wrap !important;
+                gap: 8px !important;
                 margin: 6px 8px 6px 0 !important;
+                max-width: 100% !important;
                 vertical-align: middle !important;
             }
 
@@ -712,6 +921,19 @@
                 font: 600 12px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
                 letter-spacing: 0;
                 white-space: nowrap;
+            }
+
+            .${SCRIPT_ID}-dashboard-token-total {
+                box-sizing: border-box !important;
+                display: inline-flex !important;
+                align-items: center !important;
+                gap: 4px !important;
+                margin-left: 8px !important;
+                color: rgb(84, 92, 106);
+                font: 600 12px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                letter-spacing: 0;
+                white-space: nowrap !important;
+                vertical-align: middle !important;
             }
 
             [data-${SCRIPT_ID}-redeem="true"] {
@@ -889,7 +1111,7 @@
             || /(?:start|end|created)?\s*time|time\s*(?:start|end)?/.test(`${placeholder} ${ariaLabel} ${name}`);
     }
 
-    function getMidnightValue(input) {
+    function getMidnightInputValue(input) {
         const rawValue = String(input.value || '');
         const datePrefix = rawValue.match(/^\s*(\d{4}-\d{2}-\d{2})\s+/)?.[1];
         if (datePrefix) {
@@ -903,43 +1125,177 @@
         return '00:00:00';
     }
 
-    function shouldAttachMidnightButton(input) {
+    function getElementContextText(element) {
+        const explicitLabels = element.id ? Array.from(document.querySelectorAll(`label[for="${escapeCssIdentifier(element.id)}"]`)) : [];
+        const ariaLabelledBy = (element.getAttribute('aria-labelledby') || '')
+            .split(/\s+/)
+            .map((id) => document.getElementById(id)?.textContent || '')
+            .join(' ');
+
+        const nearbyText = [];
+        let node = element.parentElement;
+        for (let depth = 0; node && depth < 3; depth += 1, node = node.parentElement) {
+            if (node.matches?.('[role="dialog"], main, section')) {
+                break;
+            }
+
+            const controlCount = node.querySelectorAll('input, button, [role="button"], [role="combobox"]').length;
+            if (controlCount <= 3) {
+                nearbyText.push(node.textContent || '');
+            }
+        }
+
+        return normalizeWhitespace([
+            element.getAttribute('aria-label'),
+            element.name,
+            element.id,
+            element.placeholder,
+            element.getAttribute('data-field'),
+            explicitLabels.map((label) => label.textContent || '').join(' '),
+            ariaLabelledBy,
+            nearbyText.join(' ')
+        ].filter(Boolean).join(' ')).toLowerCase();
+    }
+
+    function isStartTimeContext(text) {
+        return /start|begin|from|开始/.test(text)
+            || /^\d{4}-\d{2}-\d{2}\s+00:/.test(text);
+    }
+
+    function isEndTimeContext(text) {
+        return /end|to|until|结束/.test(text);
+    }
+
+    function inputToTimeTarget(input) {
+        return {
+            element: input,
+            contextText: getElementContextText(input),
+            isStart: isStartTimeContext(getElementContextText(input)),
+            setMidnight: () => setInputValue(input, getMidnightInputValue(input))
+        };
+    }
+
+    function chooseAssociatedTimeInput(inputs, triggerContextText) {
+        if (inputs.length === 0) {
+            return null;
+        }
+
+        const wantsStart = isStartTimeContext(triggerContextText);
+        const wantsEnd = isEndTimeContext(triggerContextText);
+        if (wantsStart) {
+            return inputs.find((input) => isStartTimeContext(getElementContextText(input))) || inputs[0];
+        }
+
+        if (wantsEnd) {
+            return inputs.find((input) => isEndTimeContext(getElementContextText(input))) || inputs[inputs.length - 1];
+        }
+
+        return inputs.find((input) => isStartTimeContext(getElementContextText(input))) || inputs[0];
+    }
+
+    function findAssociatedTimeInput(trigger, triggerContextText) {
+        let node = trigger.parentElement;
+        for (let depth = 0; node && depth < 4; depth += 1, node = node.parentElement) {
+            if (node.matches?.('[role="dialog"], section, main')) {
+                break;
+            }
+
+            const inputs = Array.from(node.querySelectorAll('input')).filter(inputLooksLikeTimeSelector);
+            const selected = chooseAssociatedTimeInput(inputs, triggerContextText);
+            if (selected) {
+                return selected;
+            }
+        }
+
+        const triggerRoot = trigger.closest('[role="dialog"], section, main') || trigger.parentElement;
+        const inputs = Array.from((triggerRoot || document).querySelectorAll('input')).filter(inputLooksLikeTimeSelector);
+        return chooseAssociatedTimeInput(inputs, triggerContextText);
+    }
+
+    function findMidnightOption() {
+        const midnightLabels = /^(?:00:00(?::00)?|0:00(?::00)?|12:00\s*am)$/i;
+        return Array.from(document.querySelectorAll('button, [role="option"], [role="menuitem"], [cmdk-item], li, div'))
+            .filter(isElementVisible)
+            .filter((element) => !element.closest?.(`.${SCRIPT_ID}-midnight-button, .${SCRIPT_ID}-time-shortcut, .${SCRIPT_ID}-log-refresh, .${SCRIPT_ID}-log-helper, #${SCRIPT_ID}-toggle`))
+            .find((element) => midnightLabels.test(normalizeWhitespace(element.textContent || element.getAttribute('aria-label') || '')))
+            || null;
+    }
+
+    function triggerToTimeTarget(trigger) {
+        if (trigger.closest?.(`.${SCRIPT_ID}-midnight-button, .${SCRIPT_ID}-time-shortcut, .${SCRIPT_ID}-log-refresh, .${SCRIPT_ID}-log-helper, #${SCRIPT_ID}-toggle`)) {
+            return null;
+        }
+
+        const text = normalizeWhitespace(trigger.textContent || trigger.getAttribute('aria-label') || '');
+        if (!/\d{1,2}\s*:\s*\d{2}(?:\s*[ap]m)?/i.test(text)) {
+            return null;
+        }
+
+        const contextText = getElementContextText(trigger);
+        const associatedInput = findAssociatedTimeInput(trigger, contextText);
+        return {
+            element: trigger,
+            contextText,
+            isStart: isStartTimeContext(contextText),
+            setMidnight: () => {
+                if (associatedInput) {
+                    setInputValue(associatedInput, getMidnightInputValue(associatedInput));
+                }
+
+                trigger.click();
+                setTimeout(() => {
+                    const option = findMidnightOption();
+                    if (option) {
+                        option.click();
+                    }
+                }, 0);
+            }
+        };
+    }
+
+    function getTimeTargets({ visibleOnly = false } = {}) {
+        const targets = [];
+        const seen = new Set();
+        const addTarget = (target) => {
+            if (!target?.element || seen.has(target.element)) {
+                return;
+            }
+
+            if (visibleOnly && !isElementVisible(target.element)) {
+                return;
+            }
+
+            seen.add(target.element);
+            targets.push(target);
+        };
+
+        findInputs({ visibleOnly }).filter(inputLooksLikeTimeSelector).forEach((input) => addTarget(inputToTimeTarget(input)));
+        Array.from(document.querySelectorAll('button, [role="button"], [role="combobox"]'))
+            .map(triggerToTimeTarget)
+            .forEach(addTarget);
+
+        return targets;
+    }
+
+    function shouldAttachMidnightButton(element) {
         if (isLogPage()) {
             return false;
         }
 
-        if (!isElementVisible(input) || input.closest(`.${SCRIPT_ID}-log-refresh`)) {
+        if (!isElementVisible(element) || element.closest(`.${SCRIPT_ID}-log-refresh, .${SCRIPT_ID}-log-helper`)) {
             return false;
         }
 
-        const placeholder = normalizeInputValue(input.placeholder);
+        const placeholder = normalizeInputValue(element instanceof HTMLInputElement ? element.placeholder : '');
         return !placeholder.includes('redemption code');
     }
 
-    function findStartTimeInput() {
-        const candidates = findInputs({ visibleOnly: false }).filter((input) => {
-            if (!inputLooksLikeTimeSelector(input)) {
-                return false;
-            }
-
-            const labels = [
-                input.placeholder,
-                input.getAttribute('aria-label'),
-                input.name,
-                input.id,
-                input.getAttribute('data-field')
-            ].map(normalizeInputValue).join(' ');
-
-            return /start|begin|from|开始/.test(labels)
-                || /^\d{4}-\d{2}-\d{2}\s+00:/.test(normalizeInputValue(input.value));
-        });
-
-        if (candidates.length > 0) {
-            return candidates[0];
-        }
-
-        const timeInputs = findInputs({ visibleOnly: false }).filter(inputLooksLikeTimeSelector);
-        return timeInputs[0] || null;
+    function findStartTimeTarget() {
+        const targets = getTimeTargets({ visibleOnly: false });
+        return targets.find((target) => target.isStart)
+            || targets.find((target) => !/end|to|until|结束/.test(target.contextText))
+            || targets[0]
+            || null;
     }
 
     function findTimeShortcutInsertionPoint() {
@@ -953,20 +1309,7 @@
             || document.body;
     }
 
-    function ensureHiddenTimeShortcut() {
-        const existingShortcut = document.getElementById(`${SCRIPT_ID}-time-shortcut`);
-        const hasVisibleTimeShortcut = Boolean(document.querySelector(`.${SCRIPT_ID}-midnight-button`));
-        const targetInput = findStartTimeInput();
-
-        if (hasVisibleTimeShortcut || !targetInput) {
-            existingShortcut?.remove();
-            return;
-        }
-
-        if (existingShortcut) {
-            return;
-        }
-
+    function createTimeShortcutControl() {
         const control = document.createElement('span');
         control.id = `${SCRIPT_ID}-time-shortcut`;
         control.className = `${SCRIPT_ID}-time-shortcut`;
@@ -976,9 +1319,26 @@
         button.className = `${SCRIPT_ID}-time-shortcut-button`;
         button.textContent = '00:00 start';
         button.title = 'Set the start time filter to 00:00:00';
-        button.addEventListener('click', () => setInputValue(targetInput, getMidnightValue(targetInput)));
+        button.addEventListener('click', () => findStartTimeTarget()?.setMidnight());
         control.appendChild(button);
+        return control;
+    }
 
+    function ensureHiddenTimeShortcut() {
+        const existingShortcut = document.getElementById(`${SCRIPT_ID}-time-shortcut`);
+        const hasVisibleTimeShortcut = Boolean(document.querySelector(`.${SCRIPT_ID}-midnight-button`));
+        const target = findStartTimeTarget();
+
+        if (isLogPage() || hasVisibleTimeShortcut || !target) {
+            existingShortcut?.remove();
+            return;
+        }
+
+        if (existingShortcut) {
+            return;
+        }
+
+        const control = createTimeShortcutControl();
         const insertionPoint = findTimeShortcutInsertionPoint();
         if (insertionPoint === document.body) {
             document.body.prepend(control);
@@ -992,30 +1352,31 @@
     function enhanceTimeInputs() {
         if (isLogPage()) {
             document.querySelectorAll(`.${SCRIPT_ID}-midnight-button`).forEach((button) => button.remove());
-            findInputs({ visibleOnly: false }).forEach((input) => input.removeAttribute(`data-${SCRIPT_ID}-midnight-bound`));
+            getTimeTargets({ visibleOnly: false }).forEach((target) => target.element.removeAttribute(`data-${SCRIPT_ID}-midnight-bound`));
         }
 
-        for (const input of findInputs({ visibleOnly: false })) {
-            if (!inputLooksLikeTimeSelector(input) || input.getAttribute(`data-${SCRIPT_ID}-midnight-bound`) === 'true') {
+        for (const target of getTimeTargets({ visibleOnly: false })) {
+            const element = target.element;
+            if (element.getAttribute(`data-${SCRIPT_ID}-midnight-bound`) === 'true') {
                 continue;
             }
 
-            if (!shouldAttachMidnightButton(input)) {
-                input.removeAttribute(`data-${SCRIPT_ID}-midnight-bound`);
+            if (!shouldAttachMidnightButton(element)) {
+                element.removeAttribute(`data-${SCRIPT_ID}-midnight-bound`);
                 continue;
             }
 
-            input.setAttribute(`data-${SCRIPT_ID}-midnight-bound`, 'true');
+            element.setAttribute(`data-${SCRIPT_ID}-midnight-bound`, 'true');
             const button = document.createElement('button');
             button.type = 'button';
             button.className = `${SCRIPT_ID}-midnight-button`;
             button.textContent = '00:00';
             button.title = 'Set this time to 00:00:00';
             button.addEventListener('click', () => {
-                setInputValue(input, getMidnightValue(input));
+                target.setMidnight();
             });
 
-            input.insertAdjacentElement('afterend', button);
+            element.insertAdjacentElement('afterend', button);
         }
 
         ensureHiddenTimeShortcut();
@@ -1050,6 +1411,88 @@
         const rangeRow = findSharedAncestor(rangeButtons, dialog);
         if (rangeRow) {
             rangeRow.setAttribute(`data-${SCRIPT_ID}-quick-range-row`, 'true');
+        }
+    }
+
+    function isDashboardModelAnalyticsHeader(element) {
+        const text = normalizeWhitespace(element.textContent || '');
+        if (!/(?:model\s+call\s+analytics|模型调用分析)/i.test(text) || !/(?:total\s*:|总计\s*[：:])/i.test(text)) {
+            return false;
+        }
+
+        const section = element.closest('section, article, [role="region"], [class*="card" i], [class*="rounded" i], main') || element;
+        return /call\s+count\s+distribution|call\s+trend|call\s+count\s+ranking|model\s+call\s+analytics|调用次数分布|调用趋势|调用次数排行|模型调用分析/i.test(section.textContent || text);
+    }
+
+    function findDashboardModelAnalyticsHeader() {
+        const candidates = Array.from(document.querySelectorAll('main div, main header, main section, main article, [role="region"]'))
+            .filter((element) => !element.closest?.(`.${SCRIPT_ID}-dashboard-token-total, #${SCRIPT_ID}-toggle`))
+            .filter(isElementVisible)
+            .filter(isDashboardModelAnalyticsHeader);
+
+        return candidates
+            .sort((left, right) => {
+                const leftButtons = left.querySelectorAll('button').length;
+                const rightButtons = right.querySelectorAll('button').length;
+                const leftLength = normalizeWhitespace(left.textContent || '').length;
+                const rightLength = normalizeWhitespace(right.textContent || '').length;
+                return (leftButtons - rightButtons) || (leftLength - rightLength);
+            })[0] || null;
+    }
+
+    function findDashboardTokenTotalAnchor(header) {
+        const exactTotalNode = Array.from(header.querySelectorAll('span, div, p, small'))
+            .filter(isElementVisible)
+            .find((element) => /^(?:total\s*:\s*[\d,.]+|总计\s*[：:]\s*[\d,.]+)$/i.test(normalizeWhitespace(element.textContent || '')));
+
+        if (exactTotalNode) {
+            return exactTotalNode;
+        }
+
+        return Array.from(header.children).find((child) => /(?:total\s*:|总计\s*[：:])/i.test(child.textContent || '')) || header;
+    }
+
+    function parseDashboardDisplayedTotal(text) {
+        const match = normalizeWhitespace(String(text || '')).match(/(?:total\s*:|总计\s*[：:])\s*([\d,.]+)/i);
+        return match ? parseMetricNumber(match[1]) : null;
+    }
+
+    function enhanceDashboardTokenTotal() {
+        const existing = document.getElementById(`${SCRIPT_ID}-dashboard-token-total`);
+        const header = findDashboardModelAnalyticsHeader();
+        const snapshot = dashboardAnalyticsTokenSnapshot;
+
+        if (!header || !snapshot || !Number.isFinite(snapshot.totalTokens)) {
+            existing?.remove();
+            return;
+        }
+
+        const anchor = findDashboardTokenTotalAnchor(header);
+        if (!anchor) {
+            existing?.remove();
+            return;
+        }
+
+        const displayedTotal = parseDashboardDisplayedTotal(anchor.textContent) ?? parseDashboardDisplayedTotal(header.textContent);
+        if (snapshot.totalCount !== null && displayedTotal !== null && Math.round(displayedTotal) !== Math.round(snapshot.totalCount)) {
+            existing?.remove();
+            return;
+        }
+
+        const nextText = `Tokens: ${formatInteger(Math.max(0, snapshot.totalTokens))}`;
+        let badge = existing;
+        if (!badge) {
+            badge = document.createElement('span');
+            badge.id = `${SCRIPT_ID}-dashboard-token-total`;
+            badge.className = `${SCRIPT_ID}-dashboard-token-total`;
+            badge.title = 'Total tokens used in the loaded dashboard analytics range';
+        }
+
+        badge.textContent = nextText;
+        badge.setAttribute('aria-label', nextText);
+
+        if (badge.parentElement !== anchor.parentElement || badge.previousElementSibling !== anchor) {
+            anchor.insertAdjacentElement('afterend', badge);
         }
     }
 
@@ -1694,6 +2137,11 @@
         }
     }
 
+    function removeLogHelperControl() {
+        document.getElementById(`${SCRIPT_ID}-log-helper`)?.remove();
+        document.getElementById(`${SCRIPT_ID}-log-refresh`)?.remove();
+    }
+
     function syncLogAutoRefreshTimer() {
         if (!isAutoRefreshEnabled() || !isLogPage()) {
             clearLogAutoRefreshTimers();
@@ -1723,15 +2171,58 @@
             || document.body;
     }
 
-    function enhanceLogAutoRefresh() {
+    function ensureLogHelperCluster() {
         if (!isLogPage()) {
-            document.getElementById(`${SCRIPT_ID}-log-refresh`)?.remove();
+            removeLogHelperControl();
             syncLogAutoRefreshTimer();
+            return null;
+        }
+
+        let cluster = document.getElementById(`${SCRIPT_ID}-log-helper`);
+        if (!cluster) {
+            cluster = document.createElement('span');
+            cluster.id = `${SCRIPT_ID}-log-helper`;
+            cluster.className = `${SCRIPT_ID}-log-helper`;
+            const insertionPoint = findLogRefreshInsertionPoint();
+            if (insertionPoint === document.body) {
+                document.body.prepend(cluster);
+            } else if (insertionPoint.matches?.('main, section')) {
+                insertionPoint.prepend(cluster);
+            } else {
+                insertionPoint.insertAdjacentElement('afterend', cluster);
+            }
+        }
+
+        return cluster;
+    }
+
+    function ensureLogTimeShortcut(cluster) {
+        const existingShortcut = document.getElementById(`${SCRIPT_ID}-time-shortcut`);
+        const target = findStartTimeTarget();
+        if (!cluster || !target) {
+            existingShortcut?.remove();
             return;
         }
 
-        if (!document.getElementById(`${SCRIPT_ID}-log-refresh`)) {
-            const control = document.createElement('span');
+        if (!existingShortcut) {
+            cluster.appendChild(createTimeShortcutControl());
+            return;
+        }
+
+        if (existingShortcut.parentElement !== cluster) {
+            cluster.appendChild(existingShortcut);
+        }
+    }
+
+    function enhanceLogAutoRefresh() {
+        const cluster = ensureLogHelperCluster();
+        if (!cluster) {
+            return;
+        }
+
+        let control = document.getElementById(`${SCRIPT_ID}-log-refresh`);
+        if (!control) {
+            control = document.createElement('span');
             control.id = `${SCRIPT_ID}-log-refresh`;
             control.className = `${SCRIPT_ID}-log-refresh`;
 
@@ -1751,17 +2242,12 @@
             status.className = `${SCRIPT_ID}-log-refresh-status`;
 
             control.append(button, status);
-
-            const insertionPoint = findLogRefreshInsertionPoint();
-            if (insertionPoint === document.body) {
-                document.body.prepend(control);
-            } else if (insertionPoint.matches?.('main, section')) {
-                insertionPoint.prepend(control);
-            } else {
-                insertionPoint.insertAdjacentElement('afterend', control);
-            }
+            cluster.appendChild(control);
+        } else if (control.parentElement !== cluster) {
+            cluster.appendChild(control);
         }
 
+        ensureLogTimeShortcut(cluster);
         syncLogAutoRefreshTimer();
     }
 
@@ -1779,11 +2265,13 @@
         restorePageControlValues();
         enhanceTimeInputs();
         enhanceDashboardModelFilterDialog();
+        enhanceDashboardTokenTotal();
         enhanceLogAutoRefresh();
         enhanceTableSorting();
         removeSortDropdownPopups();
         removeStaleApiInfoLabels();
         removeStaleModelFilterArtifacts();
+        updateToggle();
     }
 
     function queueEnhancements() {
@@ -2010,16 +2498,14 @@
                     continue;
                 }
 
-                if (!enabled) {
-                    continue;
-                }
-
                 for (const node of mutation.addedNodes) {
                     if (node.id === `${SCRIPT_ID}-toggle` || node.id === `${SCRIPT_ID}-style`) {
                         continue;
                     }
 
-                    processRoot(node);
+                    if (enabled) {
+                        processRoot(node);
+                    }
                     queueEnhancements();
                 }
             }
@@ -2044,6 +2530,7 @@
     }
 
     installChatStorageCompatibilityHook();
+    installDashboardAnalyticsDataHook();
     repairStoredChatConfig();
 
     if (document.readyState === 'loading') {
