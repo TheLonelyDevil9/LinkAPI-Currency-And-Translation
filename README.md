@@ -11,7 +11,7 @@ https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translati
 - Converts visible CNY/RMB/yuan values to USD with comma grouping, using extra decimals for nonzero sub-cent amounts.
 - Replaces `(CNY)` and `(RMB)` labels with `(USD)`.
 - Updates `© 2025 LinkAPI` to `© 2026 LinkAPI`.
-- Adds a compact `USD` / `CNY` toggle for quick comparison with original LinkAPI values.
+- Adds a stable `Show USD values` entry in the account menu for quick comparison with original LinkAPI values.
 - Watches dynamic page updates so newly rendered prices are converted while the toggle is in USD mode.
 - Persists safe route-scoped page controls such as filters, selects, and view options.
 - Avoids storing API keys, tokens, prompts, messages, redemption codes, credentials, passwords, textarea content, or other secret-like values.

@@ -229,6 +229,8 @@ async function loadFixture(client, url, { seedStaleArtifacts = false } = {}) {
                 '<span id="tld-linkapi-cny-usd-log-helper"></span>',
                 '<span id="tld-linkapi-cny-usd-log-refresh"></span>',
                 '<span id="tld-linkapi-cny-usd-dashboard-token-total"></span>',
+                '<button id="tld-linkapi-cny-usd-toggle" class="tld-linkapi-cny-usd-control">USD</button>',
+                '<style id="tld-linkapi-cny-usd-style">#tld-linkapi-cny-usd-toggle{position:fixed}</style>',
                 '<button class="tld-linkapi-cny-usd-midnight-button">00:00</button>',
                 '<div class="tld-linkapi-cny-usd-model-filter"></div>',
                 '<div class="tld-linkapi-cny-usd-dialog-model-filter-wrap"></div>',
@@ -264,11 +266,14 @@ async function runReducedScopeAssertions(client) {
         unit: document.getElementById('unit').textContent,
         copyright: document.getElementById('copyright').textContent,
         announcement: document.getElementById('announcement').textContent,
-        toggleText: document.getElementById('tld-linkapi-cny-usd-toggle')?.textContent,
-        toggleAfterHome: document.querySelector('header nav a[href="/"]')?.nextElementSibling?.id === 'tld-linkapi-cny-usd-toggle',
-        toggleFallback: document.getElementById('tld-linkapi-cny-usd-toggle')?.classList.contains('tld-linkapi-cny-usd-fallback'),
-        toggleTop: Math.round(document.getElementById('tld-linkapi-cny-usd-toggle')?.getBoundingClientRect().top || 0),
-        homeTop: Math.round(document.querySelector('header nav a[href="/"]')?.getBoundingClientRect().top || 0),
+        oldToggle: Boolean(document.getElementById('tld-linkapi-cny-usd-toggle')),
+        oldToggleStyle: Boolean(document.getElementById('tld-linkapi-cny-usd-style')),
+        menuToggleText: document.getElementById('tld-linkapi-cny-usd-menu-toggle')?.textContent,
+        menuToggleChecked: document.getElementById('tld-linkapi-cny-usd-menu-toggle')?.getAttribute('aria-checked'),
+        menuToggleRole: document.getElementById('tld-linkapi-cny-usd-menu-toggle')?.getAttribute('role'),
+        menuToggleAfterWallet: document.getElementById('wallet-item')?.nextElementSibling?.id === 'tld-linkapi-cny-usd-menu-toggle',
+        menuToggleBeforeDivider: document.getElementById('tld-linkapi-cny-usd-menu-toggle')?.nextElementSibling?.id === 'account-divider',
+        menuToggleCount: document.querySelectorAll('#tld-linkapi-cny-usd-menu-toggle').length,
         hasInlineTime: Boolean(document.querySelector('.tld-linkapi-cny-usd-midnight-button')),
         hasLogHelper: Boolean(document.getElementById('tld-linkapi-cny-usd-log-helper')),
         hasLogRefresh: Boolean(document.getElementById('tld-linkapi-cny-usd-log-refresh')),
@@ -293,10 +298,14 @@ async function runReducedScopeAssertions(client) {
     assert(initial.unit === 'Price (USD)', 'CNY unit label was not converted');
     assert(initial.copyright === '© 2026 LinkAPI', 'Copyright year was not updated');
     assert(initial.announcement === '亲爱的用户，请先Refresh后再查询。', 'Chinese UI text was translated despite reduced scope');
-    assert(initial.toggleText === 'USD', 'Toggle did not start in USD mode');
-    assert(initial.toggleAfterHome, 'Toggle was not inserted beside the Home nav item');
-    assert(!initial.toggleFallback, 'Toggle used fallback placement even though Home exists');
-    assert(Math.abs(initial.toggleTop - initial.homeTop) <= 8, 'Toggle is not aligned with the top navigation');
+    assert(!initial.oldToggle, 'Old top-bar toggle was not removed');
+    assert(!initial.oldToggleStyle, 'Old top-bar toggle stylesheet was not removed');
+    assert(initial.menuToggleText === 'Show USD values', 'Menu toggle did not use the stable preference label');
+    assert(initial.menuToggleChecked === 'true', 'Menu toggle did not start checked in USD mode');
+    assert(initial.menuToggleRole === 'menuitemcheckbox', 'Menu toggle did not use checkable menu semantics');
+    assert(initial.menuToggleAfterWallet, 'Menu toggle was not inserted after Wallet');
+    assert(initial.menuToggleBeforeDivider, 'Menu toggle was not inserted before the sign-out divider');
+    assert(initial.menuToggleCount === 1, 'Menu toggle was inserted more than once');
     assert(!initial.hasInlineTime, 'Removed inline time helper still exists');
     assert(!initial.hasLogHelper, 'Removed log helper still exists');
     assert(!initial.hasLogRefresh, 'Removed log refresh helper still exists');
@@ -314,14 +323,16 @@ async function runReducedScopeAssertions(client) {
     assert(initial.redeemWrap, 'Redemption compact wrapper was not marked');
     assert(initial.redeemPlaceholder === 'Enter your redemption code here', 'Redemption placeholder was not normalized');
 
-    await evaluate(client, `document.getElementById('tld-linkapi-cny-usd-toggle').click()`);
+    await evaluate(client, `document.getElementById('tld-linkapi-cny-usd-menu-toggle').click()`);
     await delay(100);
     const cnyMode = await evaluate(client, `(() => ({
         balance: document.getElementById('balance').textContent,
         cost: document.getElementById('cost').textContent,
         unit: document.getElementById('unit').textContent,
         copyright: document.getElementById('copyright').textContent,
-        toggleText: document.getElementById('tld-linkapi-cny-usd-toggle').textContent,
+        menuToggleText: document.getElementById('tld-linkapi-cny-usd-menu-toggle').textContent,
+        menuToggleChecked: document.getElementById('tld-linkapi-cny-usd-menu-toggle').getAttribute('aria-checked'),
+        menuToggleCount: document.querySelectorAll('#tld-linkapi-cny-usd-menu-toggle').length,
         stored: localStorage.getItem('tld-linkapi-cny-usd:enabled')
     }))()`);
 
@@ -329,19 +340,23 @@ async function runReducedScopeAssertions(client) {
     assert(cnyMode.cost === 'Cost: 0.0123 CNY', 'Toggle did not restore original CNY suffix amount');
     assert(cnyMode.unit === 'Price (CNY)', 'Toggle did not restore original CNY unit label');
     assert(cnyMode.copyright === '© 2025 LinkAPI', 'Toggle did not restore original copyright text');
-    assert(cnyMode.toggleText === 'CNY', 'Toggle did not switch to CNY label');
+    assert(cnyMode.menuToggleText === 'Show USD values', 'Menu toggle label changed outside stable preference text');
+    assert(cnyMode.menuToggleChecked === 'false', 'Menu toggle did not uncheck in CNY mode');
+    assert(cnyMode.menuToggleCount === 1, 'Menu toggle duplicated after switching to CNY mode');
     assert(cnyMode.stored === 'false', 'Toggle state was not persisted');
 
-    await evaluate(client, `document.getElementById('tld-linkapi-cny-usd-toggle').click()`);
+    await evaluate(client, `document.getElementById('tld-linkapi-cny-usd-menu-toggle').click()`);
     await delay(100);
     const usdMode = await evaluate(client, `(() => ({
         balance: document.getElementById('balance').textContent,
-        toggleText: document.getElementById('tld-linkapi-cny-usd-toggle').textContent,
+        menuToggleText: document.getElementById('tld-linkapi-cny-usd-menu-toggle').textContent,
+        menuToggleChecked: document.getElementById('tld-linkapi-cny-usd-menu-toggle').getAttribute('aria-checked'),
         stored: localStorage.getItem('tld-linkapi-cny-usd:enabled')
     }))()`);
 
     assert(usdMode.balance === '当前余额: $14.62', 'Toggle did not reconvert to USD');
-    assert(usdMode.toggleText === 'USD', 'Toggle did not switch back to USD label');
+    assert(usdMode.menuToggleText === 'Show USD values', 'Menu toggle label changed after switching back to USD mode');
+    assert(usdMode.menuToggleChecked === 'true', 'Menu toggle did not recheck in USD mode');
     assert(usdMode.stored === 'true', 'USD toggle state was not persisted');
 
     await evaluate(client, `(() => {

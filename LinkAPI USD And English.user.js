@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         LinkAPI USD And English
 // @namespace    https://violentmonkey.github.io/
-// @version      4.1
-// @description  Convert LinkAPI CNY values to USD with a lightweight comparison toggle
+// @version      4.2
+// @description  Convert LinkAPI CNY values to USD with an account-menu comparison control
 // @author       TheLonelyDevil
 // @updateURL    https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translation/main/LinkAPI%20USD%20And%20English.user.js
 // @downloadURL  https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translation/main/LinkAPI%20USD%20And%20English.user.js
@@ -22,8 +22,13 @@
     const STORAGE_KEY = `${SCRIPT_ID}:enabled`;
     const PAGE_SETTINGS_STORAGE_KEY = `${SCRIPT_ID}:page-settings:v1`;
     const HELPER_STYLE_ID = `${SCRIPT_ID}-helper-style`;
-    const TOGGLE_STYLE_ID = `${SCRIPT_ID}-style`;
+    const MENU_STYLE_ID = `${SCRIPT_ID}-menu-style`;
+    const MENU_TOGGLE_ID = `${SCRIPT_ID}-menu-toggle`;
+    const MENU_TOGGLE_CLASS = `${SCRIPT_ID}-menu-control`;
     const CNY_TO_USD_RATE = 0.146201;
+    const ACCOUNT_MENU_WALLET_LABELS = ['wallet', '钱包', '錢包'];
+    const ACCOUNT_MENU_SIGN_OUT_LABELS = ['sign out', 'sign-out', 'log out', 'logout', '退出登录', '退出登錄', '登出'];
+    const MENU_TOGGLE_LABEL = 'Show USD values';
 
     const PREFIX_CNY_PATTERN = /(?<![\w$])(?:CNY|RMB|CN¥|CN￥|¥|￥|人民币)\s*([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)(?!\s*(?:CNY|RMB|元)?\s*\))/gi;
     const SUFFIX_CNY_PATTERN = /(?<![\w$])([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?:CNY|RMB|人民币|元)(?!\s*\))/gi;
@@ -35,8 +40,8 @@
     let observer = null;
     let processQueued = false;
     let enhancementQueued = false;
-    let toggleButton = null;
-    let togglePlacementQueued = false;
+    let menuToggleButton = null;
+    let menuPlacementQueued = false;
     let pageSettingRestoreInProgress = false;
 
     function toNumber(rawAmount) {
@@ -83,7 +88,7 @@
         const parent = node.parentElement;
         return !parent
             || SKIP_TAGS.has(parent.tagName)
-            || Boolean(parent.closest(`#${SCRIPT_ID}-toggle, .${SCRIPT_ID}-control`));
+            || Boolean(parent.closest(`#${SCRIPT_ID}-toggle, .${SCRIPT_ID}-control, #${MENU_TOGGLE_ID}, .${MENU_TOGGLE_CLASS}`));
     }
 
     function processTextNode(node) {
@@ -123,7 +128,10 @@
             return;
         }
 
-        if (root.nodeType === Node.ELEMENT_NODE && (SKIP_TAGS.has(root.tagName) || root.id === `${SCRIPT_ID}-toggle`)) {
+        if (root.nodeType === Node.ELEMENT_NODE && (SKIP_TAGS.has(root.tagName)
+            || root.id === `${SCRIPT_ID}-toggle`
+            || root.id === MENU_TOGGLE_ID
+            || root.classList?.contains(MENU_TOGGLE_CLASS))) {
             return;
         }
 
@@ -519,7 +527,9 @@
             `${SCRIPT_ID}-time-shortcut`,
             `${SCRIPT_ID}-log-helper`,
             `${SCRIPT_ID}-log-refresh`,
-            `${SCRIPT_ID}-dashboard-token-total`
+            `${SCRIPT_ID}-dashboard-token-total`,
+            `${SCRIPT_ID}-toggle`,
+            `${SCRIPT_ID}-style`
         ].forEach((id) => document.getElementById(id)?.remove());
 
         document.querySelectorAll([
@@ -581,7 +591,7 @@
         enhanceRedemptionInput();
         restorePageControlValues();
         removeStaleArtifacts();
-        updateToggle();
+        updateMenuToggle();
     }
 
     function queueEnhancements() {
@@ -593,7 +603,7 @@
         requestAnimationFrame(() => {
             enhancementQueued = false;
             enhancePage();
-            queueTogglePlacement();
+            queueMenuPlacement();
         });
     }
 
@@ -604,157 +614,218 @@
             .join(' '));
     }
 
-    function getElementAccessibleText(element) {
+    function normalizeMenuText(element) {
         return normalizeWhitespace([
             getElementOwnText(element),
             element.getAttribute?.('aria-label') || '',
             element.getAttribute?.('title') || ''
-        ].filter(Boolean).join(' '));
+        ].filter(Boolean).join(' ')).toLowerCase();
     }
 
-    function isHomeNavItem(element) {
-        if (!element || !isElementVisible(element)) {
-            return false;
-        }
+    function findAccountMenuCandidate() {
+        const menuRoots = Array.from(document.querySelectorAll([
+            '[role="menu"]',
+            '[aria-label*="account" i]',
+            '[aria-label*="user" i]',
+            '[aria-label*="profile" i]',
+            '[data-state="open"]',
+            '.dropdown-menu',
+            '.menu',
+            '.popover',
+            '.dropdown',
+            '.ant-dropdown',
+            '.ant-dropdown-menu',
+            '.chakra-menu__menu-list'
+        ].join(','))).filter(isElementVisible);
 
-        const text = getElementAccessibleText(element).toLowerCase();
-        if (text !== 'home' && text !== '首页') {
-            return false;
-        }
+        const scoring = menuRoots.map((root) => {
+            const items = Array.from(root.querySelectorAll('a, button, [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]'))
+                .filter(isElementVisible);
+            let score = 0;
+            const walletIndex = items.findIndex((item) => ACCOUNT_MENU_WALLET_LABELS.some((label) => normalizeMenuText(item) === label));
+            const signOutIndex = items.findIndex((item) => ACCOUNT_MENU_SIGN_OUT_LABELS.some((label) => normalizeMenuText(item).includes(label)));
 
-        const href = element.getAttribute?.('href') || '';
-        return !href || href === '/' || /(?:^|\/)(?:home|console)?(?:[?#].*)?$/.test(href);
+            if (walletIndex >= 0) {
+                score += 5;
+            }
+
+            if (signOutIndex >= 0) {
+                score += 5;
+            }
+
+            if (walletIndex >= 0 && signOutIndex >= 0 && walletIndex < signOutIndex) {
+                score += 5;
+            }
+
+            if (/menu|dropdown|popover|account|profile|user/i.test(root.className || root.id || root.getAttribute('aria-label') || '')) {
+                score += 2;
+            }
+
+            return { root, items, score, walletIndex, signOutIndex };
+        }).sort((left, right) => right.score - left.score);
+
+        return scoring.find((entry) => entry.walletIndex >= 0 || entry.signOutIndex >= 0) || null;
     }
 
-    function findHomeNavItem() {
-        return Array.from(document.querySelectorAll('header a, header button, nav a, nav button, [role="navigation"] a, [role="navigation"] button'))
-            .find(isHomeNavItem) || null;
+    function buildMenuToggle() {
+        const item = document.createElement('button');
+        item.id = MENU_TOGGLE_ID;
+        item.type = 'button';
+        item.className = MENU_TOGGLE_CLASS;
+        item.setAttribute('role', 'menuitemcheckbox');
+        item.setAttribute('aria-checked', String(enabled));
+        item.setAttribute(`data-${SCRIPT_ID}-menu-toggle`, 'true');
+        item.textContent = MENU_TOGGLE_LABEL;
+        item.addEventListener('click', () => setEnabled(!enabled));
+        return item;
     }
 
-    function placeToggle() {
-        if (!toggleButton) {
+    function placeMenuToggle() {
+        if (!menuToggleButton) {
             return;
         }
 
-        const homeItem = findHomeNavItem();
-        if (homeItem) {
-            toggleButton.classList.remove(`${SCRIPT_ID}-fallback`);
-            toggleButton.classList.add(`${SCRIPT_ID}-nav`);
-            toggleButton.style.removeProperty('--tld-linkapi-toggle-left');
-            homeItem.insertAdjacentElement('afterend', toggleButton);
+        const menu = findAccountMenuCandidate();
+        if (!menu?.root || !menu.items.length) {
             return;
         }
 
-        toggleButton.classList.remove(`${SCRIPT_ID}-nav`);
-        toggleButton.classList.add(`${SCRIPT_ID}-fallback`);
-        const firstNavItem = Array.from(document.querySelectorAll('header a, nav a, [role="navigation"] a'))
-            .filter((element) => element !== toggleButton)
-            .filter(isElementVisible)
-            .sort((left, right) => left.getBoundingClientRect().left - right.getBoundingClientRect().left)[0];
-        const leftOffset = firstNavItem ? Math.max(12, Math.round(firstNavItem.getBoundingClientRect().right + 12)) : 16;
-        toggleButton.style.setProperty('--tld-linkapi-toggle-left', `${leftOffset}px`);
-        if (toggleButton.parentElement !== document.documentElement) {
-            document.documentElement.appendChild(toggleButton);
+        const existing = menu.root.querySelector(`#${MENU_TOGGLE_ID}`);
+        if (existing && existing !== menuToggleButton) {
+            existing.remove();
         }
+
+        document.querySelectorAll(`#${MENU_TOGGLE_ID}`).forEach((element) => {
+            if (element !== menuToggleButton) {
+                element.remove();
+            }
+        });
+
+        const walletItem = menu.items.find((item) => ACCOUNT_MENU_WALLET_LABELS.some((label) => normalizeMenuText(item) === label));
+        const signOutItem = menu.items.find((item) => ACCOUNT_MENU_SIGN_OUT_LABELS.some((label) => normalizeMenuText(item).includes(label)));
+
+        if (!walletItem && !signOutItem) {
+            return;
+        }
+
+        menuToggleButton.classList.remove(`${SCRIPT_ID}-fallback`, `${SCRIPT_ID}-nav`, `${SCRIPT_ID}-control`);
+        menuToggleButton.setAttribute('aria-checked', String(enabled));
+        menuToggleButton.hidden = false;
+
+        if (walletItem) {
+            walletItem.insertAdjacentElement('afterend', menuToggleButton);
+            return;
+        }
+
+        if (signOutItem) {
+            signOutItem.insertAdjacentElement('beforebegin', menuToggleButton);
+            return;
+        }
+
+        menu.root.appendChild(menuToggleButton);
     }
 
-    function queueTogglePlacement() {
-        if (togglePlacementQueued) {
+    function queueMenuPlacement() {
+        if (menuPlacementQueued) {
             return;
         }
 
-        togglePlacementQueued = true;
+        menuPlacementQueued = true;
         requestAnimationFrame(() => {
-            togglePlacementQueued = false;
-            placeToggle();
+            menuPlacementQueued = false;
+            placeMenuToggle();
         });
     }
 
-    function updateToggle() {
-        if (!toggleButton) {
+    function updateMenuToggle() {
+        if (!menuToggleButton) {
             return;
         }
 
-        toggleButton.setAttribute('aria-pressed', String(enabled));
-        toggleButton.textContent = enabled ? 'USD' : 'CNY';
-        toggleButton.title = enabled ? 'Showing converted USD values' : 'Showing original CNY values';
-        queueTogglePlacement();
+        menuToggleButton.setAttribute('aria-checked', String(enabled));
+        queueMenuPlacement();
     }
 
     function setEnabled(nextEnabled) {
         enabled = nextEnabled;
         localStorage.setItem(STORAGE_KEY, String(enabled));
-        updateToggle();
+        updateMenuToggle();
         queueProcess();
     }
 
-    function installToggle() {
-        if (document.getElementById(`${SCRIPT_ID}-toggle`)) {
-            toggleButton = document.getElementById(`${SCRIPT_ID}-toggle`);
-            updateToggle();
+    function installMenuToggle() {
+        const existingToggle = document.getElementById(MENU_TOGGLE_ID);
+        if (existingToggle) {
+            menuToggleButton = existingToggle;
+            updateMenuToggle();
             return;
         }
 
-        const style = document.createElement('style');
-        style.id = TOGGLE_STYLE_ID;
+        const existingStyle = document.getElementById(MENU_STYLE_ID);
+        const style = existingStyle || document.createElement('style');
+        style.id = MENU_STYLE_ID;
         style.textContent = `
-            #${SCRIPT_ID}-toggle {
-                width: 62px;
-                min-width: 62px;
-                height: 30px;
-                display: inline-flex;
+            #${MENU_TOGGLE_ID} {
+                display: flex;
                 align-items: center;
-                justify-content: center;
-                flex: 0 0 auto;
-                border: 1px solid rgba(125, 137, 154, 0.38);
-                border-radius: 999px;
-                background: rgba(18, 24, 34, 0.74);
+                justify-content: flex-start;
+                width: 100%;
+                min-height: 40px;
+                border: 0;
+                border-radius: 10px;
+                background: transparent;
                 color: rgb(244, 247, 251);
                 box-shadow: none;
                 cursor: pointer;
-                font: 750 12px/1 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                font: 500 14px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
                 letter-spacing: 0;
-                margin: 0 0 0 4px;
-                padding: 0;
-                vertical-align: middle;
-                transition: background-color 140ms ease-out, border-color 140ms ease-out, color 140ms ease-out, box-shadow 140ms ease-out;
-            }
-
-            #${SCRIPT_ID}-toggle.${SCRIPT_ID}-fallback {
-                position: fixed;
-                left: var(--tld-linkapi-toggle-left, 16px);
-                top: 13px;
-                z-index: 2147483647;
                 margin: 0;
+                padding: 9px 14px;
+                text-align: left;
+                transition: background-color 140ms ease-out, color 140ms ease-out;
             }
 
-            #${SCRIPT_ID}-toggle[aria-pressed="true"] {
-                border-color: rgba(20, 184, 166, 0.66);
-                background: rgba(13, 117, 107, 0.86);
+            #${MENU_TOGGLE_ID}[hidden] {
+                display: none !important;
             }
 
-            #${SCRIPT_ID}-toggle:hover,
-            #${SCRIPT_ID}-toggle:focus-visible {
-                border-color: rgba(56, 189, 248, 0.72);
-                background: rgba(31, 41, 55, 0.92);
+            #${MENU_TOGGLE_ID}:hover,
+            #${MENU_TOGGLE_ID}:focus-visible {
+                background: rgba(255, 255, 255, 0.06);
                 outline: none;
             }
 
-            #${SCRIPT_ID}-toggle:focus-visible {
-                box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.28);
+            #${MENU_TOGGLE_ID}[aria-checked="true"] {
+                color: rgb(45, 212, 191);
+            }
+
+            #${MENU_TOGGLE_ID}[aria-checked="true"]::before {
+                content: '✓';
+                display: inline-flex;
+                width: 16px;
+                margin-right: 10px;
+                color: currentColor;
+                flex: 0 0 auto;
+            }
+
+            #${MENU_TOGGLE_ID}[aria-checked="false"]::before {
+                content: '';
+                display: inline-flex;
+                width: 16px;
+                margin-right: 10px;
+                flex: 0 0 auto;
             }
         `;
 
-        toggleButton = document.createElement('button');
-        toggleButton.id = `${SCRIPT_ID}-toggle`;
-        toggleButton.type = 'button';
-        toggleButton.className = `${SCRIPT_ID}-control`;
-        toggleButton.addEventListener('click', () => setEnabled(!enabled));
+        menuToggleButton = buildMenuToggle();
 
-        document.documentElement.appendChild(style);
-        document.documentElement.appendChild(toggleButton);
-        window.addEventListener('resize', queueTogglePlacement, { passive: true });
-        updateToggle();
+        menuToggleButton.hidden = true;
+
+        if (!existingStyle) {
+            document.documentElement.appendChild(style);
+        }
+        updateMenuToggle();
+        queueMenuPlacement();
     }
 
     function installObserver() {
@@ -783,7 +854,7 @@
                 }
 
                 for (const node of mutation.addedNodes) {
-                    if (node.id === `${SCRIPT_ID}-toggle` || node.id === TOGGLE_STYLE_ID || node.id === HELPER_STYLE_ID) {
+                    if (node.id === MENU_TOGGLE_ID || node.id === `${SCRIPT_ID}-style` || node.id === HELPER_STYLE_ID || node.id === MENU_STYLE_ID) {
                         continue;
                     }
 
@@ -804,7 +875,7 @@
 
     function boot() {
         removeStaleArtifacts();
-        installToggle();
+        installMenuToggle();
         installObserver();
         document.addEventListener('change', handlePageControlChange, true);
         document.addEventListener('input', handlePageControlChange, true);
@@ -821,10 +892,10 @@
 
     window.addEventListener('load', () => {
         queueProcess();
-        queueTogglePlacement();
+        queueMenuPlacement();
     }, { once: true });
     window.addEventListener('pageshow', () => {
         queueProcess();
-        queueTogglePlacement();
+        queueMenuPlacement();
     });
 })();

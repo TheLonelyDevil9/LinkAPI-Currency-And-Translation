@@ -38,6 +38,58 @@
       text-decoration: none;
     }
 
+    #account-shell {
+      position: fixed;
+      top: 56px;
+      right: 16px;
+      width: 220px;
+      z-index: 20;
+    }
+
+    #account-trigger {
+      position: absolute;
+      top: -44px;
+      right: 0;
+      width: 32px;
+      height: 32px;
+      border: 0;
+      border-radius: 999px;
+      background: #4c1d95;
+      color: #fff;
+      font-weight: 700;
+      padding: 0;
+    }
+
+    #account-menu {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      padding: 8px 0;
+      border: 1px solid #3f3f46;
+      border-radius: 10px;
+      background: #171717;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+    }
+
+    #account-menu [role="menuitem"],
+    #account-menu [role="menuitemcheckbox"] {
+      display: flex;
+      align-items: center;
+      min-height: 38px;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      padding: 8px 14px;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    #account-menu [role="separator"] {
+      height: 1px;
+      margin: 6px 0;
+      background: #3f3f46;
+    }
+
     main {
       padding: 24px 24px 96px 96px;
     }
@@ -93,6 +145,15 @@
       <a href="/models">Model Square</a>
     </nav>
   </header>
+  <div id="account-shell">
+    <button id="account-trigger" type="button" aria-haspopup="menu" aria-expanded="true" aria-label="Open account menu">T</button>
+    <div id="account-menu" role="menu" aria-label="Account menu" data-state="open">
+      <button id="profile-item" type="button" role="menuitem">Profile</button>
+      <button id="wallet-item" type="button" role="menuitem">Wallet</button>
+      <div id="account-divider" role="separator" aria-orientation="horizontal"></div>
+      <button id="sign-out-item" type="button" role="menuitem">Sign out</button>
+    </div>
+  </div>
   <main>
     <h1>钱包</h1>
     <p id="balance">当前余额: CNY 100.00</p>
