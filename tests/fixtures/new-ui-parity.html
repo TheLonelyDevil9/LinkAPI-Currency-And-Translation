@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>LinkAPI New UI Smoke Fixture</title>
+  <title>LinkAPI Reduced Scope Smoke Fixture</title>
   <style>
     body {
       margin: 0;
@@ -11,11 +11,37 @@
       font: 14px/1.4 system-ui, sans-serif;
     }
 
-    main {
-      padding: 24px;
+    aside {
+      position: fixed;
+      inset: 0 auto 0 0;
+      width: 72px;
+      background: #050505;
     }
 
-    .compact-grid,
+    header {
+      position: sticky;
+      top: 0;
+      height: 48px;
+      margin-left: 72px;
+      background: #050505;
+    }
+
+    header nav {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      height: 100%;
+    }
+
+    header a {
+      color: #f4f4f5;
+      text-decoration: none;
+    }
+
+    main {
+      padding: 24px 24px 96px 96px;
+    }
+
     .row,
     .actions {
       display: flex;
@@ -23,12 +49,6 @@
       gap: 10px;
       align-items: center;
       margin: 12px 0;
-    }
-
-    .compact-grid {
-      width: 520px;
-      padding: 10px;
-      border: 1px solid #3f3f46;
     }
 
     input,
@@ -55,45 +75,48 @@
       text-align: left;
     }
 
-    .popover {
-      position: absolute;
-      z-index: 20;
-      display: none;
-      flex-direction: column;
-      gap: 4px;
-      padding: 8px;
-      border: 1px solid #52525b;
-      background: #18181b;
-    }
-
-    .popover[data-open="true"] {
-      display: flex;
+    #bottom-action {
+      position: fixed;
+      left: 88px;
+      bottom: 16px;
     }
   </style>
 </head>
 <body>
-  <main data-page="usage">
-    <h1>Usage Logs</h1>
-    <p>Used quota RPM TPM Time/Request Request ID Tokens Consume Group Type Model</p>
+  <aside aria-label="Primary navigation">
+    <a href="/console">Console</a>
+  </aside>
+  <header>
+    <nav aria-label="Top navigation">
+      <a href="/">Home</a>
+      <a href="/console">Console</a>
+      <a href="/models">Model Square</a>
+    </nav>
+  </header>
+  <main>
+    <h1>钱包</h1>
+    <p id="balance">当前余额: CNY 100.00</p>
+    <p id="cost">Cost: 0.0123 CNY</p>
+    <p id="yuan">充值金额 12 元</p>
+    <p id="unit">Price (CNY)</p>
+    <p id="copyright">© 2025 LinkAPI</p>
+    <p id="announcement">亲爱的用户，请先Refresh后再查询。</p>
 
-    <div class="actions" id="log-actions">
-      <input aria-label="Log date range" value="2026-05-09 00:00 ~ 2026-05-09 12:47">
-      <button id="search-button">Search</button>
-    </div>
-
-    <div class="compact-grid" id="usage-filter-grid">
-      <label>Start Time <input id="log-start" aria-label="Start Time" value="2026-05-09 12:00 AM"></label>
-      <label>End Time <input id="log-end" aria-label="End Time" value="2026-05-09 12:47 PM"></label>
-      <input aria-label="Model Name" placeholder="Model Name">
-      <input aria-label="Group" placeholder="Group">
-      <select aria-label="All Types"><option>All Types</option></select>
+    <div class="actions">
+      <label>Model Filter <input id="model-filter" value="gpt-5.5"></label>
+      <label>API Key <input id="api-key" value="sk-sensitive-1234567890abcdef"></label>
+      <label>Prompt <textarea id="prompt-field">private prompt content</textarea></label>
+      <select id="status-filter" aria-label="Status Filter">
+        <option>All</option>
+        <option>Active</option>
+      </select>
     </div>
 
     <section>
       <h2>Wallet</h2>
       <div class="row">
         <div><input id="redeem-code" placeholder="Redemption Code"></div>
-        <button>Redeem</button>
+        <button id="redeem-button">Redeem</button>
       </div>
     </section>
 
@@ -109,22 +132,9 @@
         <tr><td>1x</td><td>A</td></tr>
       </tbody>
     </table>
+
+    <div id="dynamic-root"></div>
+    <button id="bottom-action">Native Action</button>
   </main>
-
-  <script>
-    window.__fixture = {
-      searchClicks: 0,
-      reloads: 0
-    };
-
-    document.getElementById('search-button').addEventListener('click', () => {
-      window.__fixture.searchClicks += 1;
-    });
-
-    window.location.reload = () => {
-      window.__fixture.reloads += 1;
-    };
-
-  </script>
 </body>
 </html>

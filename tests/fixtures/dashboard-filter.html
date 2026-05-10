@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>LinkAPI Dashboard Filter Fixture</title>
+  <title>LinkAPI Dashboard Removed Helpers Fixture</title>
   <style>
     body {
       margin: 0;
@@ -32,28 +32,12 @@
       color: #fafafa;
       padding: 0 10px;
     }
-
-    .popover {
-      position: absolute;
-      z-index: 20;
-      display: none;
-      flex-direction: column;
-      gap: 4px;
-      padding: 8px;
-      border: 1px solid #52525b;
-      background: #18181b;
-    }
-
-    .popover[data-open="true"] {
-      display: flex;
-    }
   </style>
 </head>
 <body>
   <aside aria-label="Primary navigation">
     <a href="/dashboard/models">Dashboard</a>
     <a href="/usage-logs/common">Usage Logs</a>
-    <a href="/usage-logs/task">Task Logs</a>
   </aside>
   <main>
     <h1>Dashboard</h1>
@@ -75,54 +59,14 @@
         <button>29 Days</button>
       </div>
       <div class="row">
-        <label>Start Time
-          <input id="dashboard-start-hidden" aria-label="Dashboard Start Time" value="2026-04-10 11:47:00" style="display:none">
-          <button id="dashboard-start-trigger" type="button" aria-label="Dashboard Start Time" data-menu="dashboard-start-menu">11:47 AM</button>
-        </label>
-      </div>
-      <div class="row">
-        <label>End Time
-          <input id="dashboard-end-hidden" aria-label="Dashboard End Time" value="2026-05-09 11:47:00" style="display:none">
-          <button id="dashboard-end-trigger" type="button" aria-label="Dashboard End Time" data-menu="dashboard-end-menu">11:47 AM</button>
-        </label>
+        <label>Start Time <input id="dashboard-start" aria-label="Dashboard Start Time" value="2026-04-10 11:47:00"></label>
       </div>
       <div class="row">Time Granularity <button>Day</button></div>
     </section>
-
-    <div id="dashboard-start-menu" class="popover" role="listbox">
-      <button role="option" data-value="00:00:00">00:00</button>
-      <button role="option" data-value="11:47:00">11:47 AM</button>
-    </div>
-    <div id="dashboard-end-menu" class="popover" role="listbox">
-      <button role="option" data-value="00:00:00">00:00</button>
-      <button role="option" data-value="11:47:00">11:47 AM</button>
-    </div>
   </main>
 
   <script>
     history.replaceState({}, '', '/dashboard/models');
-
-    document.querySelectorAll('[data-menu]').forEach((trigger) => {
-      trigger.addEventListener('click', () => {
-        const menu = document.getElementById(trigger.dataset.menu);
-        document.querySelectorAll('.popover').forEach((candidate) => {
-          candidate.dataset.open = String(candidate === menu && candidate.dataset.open !== 'true');
-        });
-      });
-    });
-
-    document.querySelectorAll('[role="option"]').forEach((option) => {
-      option.addEventListener('click', () => {
-        const menu = option.closest('.popover');
-        const trigger = document.querySelector(`[data-menu="${menu.id}"]`);
-        const hiddenInput = menu.id === 'dashboard-start-menu'
-          ? document.getElementById('dashboard-start-hidden')
-          : document.getElementById('dashboard-end-hidden');
-        hiddenInput.value = `2026-05-09 ${option.dataset.value}`;
-        trigger.textContent = option.textContent.trim();
-        menu.dataset.open = 'false';
-      });
-    });
   </script>
 </body>
 </html>

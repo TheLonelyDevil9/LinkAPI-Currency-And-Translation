@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, resolve } from 'node:path';
+import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const root = resolve(import.meta.dirname, '..');
@@ -32,26 +33,9 @@ function contentType(pathname) {
 }
 
 async function startServer() {
-    logDebug('starting fixture server');
     const server = createServer(async (request, response) => {
         try {
             const url = new URL(request.url || '/', 'http://127.0.0.1');
-            if (url.pathname === '/api/data' || url.pathname === '/api/data/self') {
-                const noTokenFixture = url.searchParams.get('fixture') === 'no-token';
-                const data = noTokenFixture
-                    ? [
-                        { created_at: 1778284800, model_name: 'gpt-5.5', count: 10000, quota: 123 },
-                        { created_at: 1778371200, model_name: 'claude', count: 14866, quota: 456 }
-                    ]
-                    : [
-                        { created_at: 1778284800, model_name: 'gpt-5.5', count: 10000, quota: 123, token_used: 1200000 },
-                        { created_at: 1778371200, model_name: 'claude', count: 14866, quota: 456, token_used: 345678 }
-                    ];
-                response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-                response.end(JSON.stringify({ success: true, data }));
-                return;
-            }
-
             const pathname = url.pathname === '/' ? '/tests/fixtures/new-ui-parity.html' : url.pathname;
             const filePath = resolve(root, `.${decodeURIComponent(pathname)}`);
             assert(filePath.startsWith(root), 'Blocked path traversal');
@@ -71,7 +55,7 @@ async function startServer() {
             resolveListen();
         });
     });
-    logDebug('fixture server listening', server.address().port);
+
     return {
         server,
         origin: `http://127.0.0.1:${server.address().port}`
@@ -79,6 +63,7 @@ async function startServer() {
 }
 
 async function chromeFetch(path, options) {
+    logDebug('chrome fetch', path);
     const response = await fetch(`${chromeEndpoint}${path}`, options);
     if (!response.ok) {
         throw new Error(`Chrome CDP request failed: ${response.status} ${response.statusText}`);
@@ -155,16 +140,11 @@ class CdpClient {
     }
 
     close() {
-        return new Promise((resolveClose) => {
-            if (this.socket.readyState === WebSocket.CLOSED) {
-                resolveClose();
-                return;
-            }
-
-            this.socket.addEventListener('close', resolveClose, { once: true });
+        try {
             this.socket.close();
-            setTimeout(resolveClose, 1000);
-        });
+        } catch (_) {
+            // Best-effort cleanup only; the Chrome target is closed separately.
+        }
     }
 }
 
@@ -193,6 +173,24 @@ async function connectToPage() {
     return { client, target };
 }
 
+function closeChromeTargetAfterExit(targetId) {
+    if (!targetId) {
+        return;
+    }
+
+    const cleanupScript = `
+        fetch(${JSON.stringify(`${chromeEndpoint}/json/close/${targetId}`)})
+            .finally(() => process.exit(0));
+        setTimeout(() => process.exit(0), 5000);
+    `;
+    const child = spawn(process.execPath, ['-e', cleanupScript], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true
+    });
+    child.unref();
+}
+
 async function evaluate(client, expression, { awaitPromise = false } = {}) {
     const result = await client.send('Runtime.evaluate', {
         expression,
@@ -206,190 +204,240 @@ async function evaluate(client, expression, { awaitPromise = false } = {}) {
     return result.result.value;
 }
 
-async function loadFixture(client, url) {
-    logDebug('loading', url);
+async function loadFixture(client, url, { seedStaleArtifacts = false } = {}) {
+    logDebug('loading fixture', url);
     const loaded = client.waitForEvent('Page.loadEventFired');
     await client.send('Page.navigate', { url });
     await loaded;
-    logDebug('injecting userscript');
+    logDebug('fixture loaded');
+
+    if (seedStaleArtifacts) {
+        logDebug('seeding stale artifacts');
+        await evaluate(client, `(() => {
+            localStorage.setItem('tld-linkapi-cny-usd:log-auto-refresh', 'true');
+            localStorage.setItem('tld-linkapi-cny-usd:model-filter', JSON.stringify({ hidden: ['gpt-5.5'] }));
+            localStorage.setItem('chats', JSON.stringify([{ Other: 'other' }]));
+            localStorage.setItem('tld-linkapi-cny-usd:page-settings:v1', JSON.stringify({
+                [window.location.origin + window.location.pathname]: {
+                    tableSorts: { old: { headerKey: '1:model', direction: 'desc' } },
+                    controls: {}
+                }
+            }));
+
+            document.body.insertAdjacentHTML('beforeend', [
+                '<span id="tld-linkapi-cny-usd-time-shortcut"></span>',
+                '<span id="tld-linkapi-cny-usd-log-helper"></span>',
+                '<span id="tld-linkapi-cny-usd-log-refresh"></span>',
+                '<span id="tld-linkapi-cny-usd-dashboard-token-total"></span>',
+                '<button class="tld-linkapi-cny-usd-midnight-button">00:00</button>',
+                '<div class="tld-linkapi-cny-usd-model-filter"></div>',
+                '<div class="tld-linkapi-cny-usd-dialog-model-filter-wrap"></div>',
+                '<span class="tld-linkapi-cny-usd-api-info-label"></span>'
+            ].join(''));
+
+            const hidden = document.createElement('div');
+            hidden.className = 'tld-linkapi-cny-usd-hidden-by-model-filter';
+            document.body.appendChild(hidden);
+
+            const header = document.querySelector('#api-table th:nth-child(2)');
+            header.setAttribute('data-tld-linkapi-cny-usd-sort-bound', 'true');
+            header.setAttribute('aria-sort', 'descending');
+            header.title = 'Click to sort ascending, click again for descending';
+        })()`);
+    }
+
     const scriptSource = await readFile(scriptPath, 'utf8');
+    logDebug('injecting script');
     await evaluate(client, scriptSource);
+    logDebug('script injected');
     await delay(100);
 }
 
-async function runNewUiAssertions(client) {
-    logDebug('new ui assertions');
-    await loadFixture(client, `${globalThis.__smokeOrigin}/tests/fixtures/new-ui-parity.html`);
-
-    await evaluate(client, 'localStorage.setItem("chats", JSON.stringify([{ "Other": "other" }]))');
-    await evaluate(client, 'Storage.prototype.setItem.call(localStorage, "chats", localStorage.getItem("chats"))');
-    await delay(50);
+async function runReducedScopeAssertions(client) {
+    logDebug('run reduced scope assertions');
+    await loadFixture(client, `${globalThis.__smokeOrigin}/tests/fixtures/new-ui-parity.html`, { seedStaleArtifacts: true });
 
     const initial = await evaluate(client, `(() => ({
-        inlineInLogGrid: document.querySelectorAll('#usage-filter-grid .tld-linkapi-cny-usd-midnight-button').length,
-        hasLogShortcut: Boolean(document.querySelector('#tld-linkapi-cny-usd-log-helper #tld-linkapi-cny-usd-time-shortcut')),
-        hasAutoRefresh: Boolean(document.querySelector('#tld-linkapi-cny-usd-log-helper #tld-linkapi-cny-usd-log-refresh')),
+        balance: document.getElementById('balance').textContent,
+        cost: document.getElementById('cost').textContent,
+        yuan: document.getElementById('yuan').textContent,
+        unit: document.getElementById('unit').textContent,
+        copyright: document.getElementById('copyright').textContent,
+        announcement: document.getElementById('announcement').textContent,
+        toggleText: document.getElementById('tld-linkapi-cny-usd-toggle')?.textContent,
+        toggleAfterHome: document.querySelector('header nav a[href="/"]')?.nextElementSibling?.id === 'tld-linkapi-cny-usd-toggle',
+        toggleFallback: document.getElementById('tld-linkapi-cny-usd-toggle')?.classList.contains('tld-linkapi-cny-usd-fallback'),
+        toggleTop: Math.round(document.getElementById('tld-linkapi-cny-usd-toggle')?.getBoundingClientRect().top || 0),
+        homeTop: Math.round(document.querySelector('header nav a[href="/"]')?.getBoundingClientRect().top || 0),
+        hasInlineTime: Boolean(document.querySelector('.tld-linkapi-cny-usd-midnight-button')),
+        hasLogHelper: Boolean(document.getElementById('tld-linkapi-cny-usd-log-helper')),
+        hasLogRefresh: Boolean(document.getElementById('tld-linkapi-cny-usd-log-refresh')),
+        hasDashboardBadge: Boolean(document.getElementById('tld-linkapi-cny-usd-dashboard-token-total')),
+        hasModelFilter: Boolean(document.querySelector('.tld-linkapi-cny-usd-model-filter, .tld-linkapi-cny-usd-dialog-model-filter-wrap')),
+        hiddenClassCount: document.querySelectorAll('.tld-linkapi-cny-usd-hidden-by-model-filter').length,
+        logStorage: localStorage.getItem('tld-linkapi-cny-usd:log-auto-refresh'),
+        modelStorage: localStorage.getItem('tld-linkapi-cny-usd:model-filter'),
+        chats: localStorage.getItem('chats'),
+        tableOrder: Array.from(document.querySelectorAll('#api-table tbody tr')).map((row) => row.children[1].textContent).join(','),
+        headerSortBound: document.querySelector('#api-table th:nth-child(2)').hasAttribute('data-tld-linkapi-cny-usd-sort-bound'),
+        headerAriaSort: document.querySelector('#api-table th:nth-child(2)').getAttribute('aria-sort'),
+        headerTitle: document.querySelector('#api-table th:nth-child(2)').getAttribute('title'),
+        helperStyle: document.getElementById('tld-linkapi-cny-usd-helper-style')?.textContent || '',
         redeemWrap: Boolean(document.querySelector('[data-tld-linkapi-cny-usd-redeem-wrap="true"]')),
-        importNames: JSON.parse(localStorage.getItem('chats')).flatMap((entry) => Object.keys(entry))
+        redeemPlaceholder: document.getElementById('redeem-code').placeholder
     }))()`);
 
-    assert(initial.inlineInLogGrid === 0, 'Usage Logs compact grid received inline 00:00 buttons');
-    assert(initial.hasLogShortcut, 'Usage Logs safe 00:00 start shortcut was not rendered');
-    assert(initial.hasAutoRefresh, 'Usage Logs auto-refresh control was not rendered');
+    assert(initial.balance === '当前余额: $14.62', 'CNY prefix amount was not converted to USD');
+    assert(initial.cost === 'Cost: $0.001798', 'Tiny suffix CNY amount was not converted with extra precision');
+    assert(initial.yuan === '充值金额 $1.75', 'Yuan suffix amount was not converted');
+    assert(initial.unit === 'Price (USD)', 'CNY unit label was not converted');
+    assert(initial.copyright === '© 2026 LinkAPI', 'Copyright year was not updated');
+    assert(initial.announcement === '亲爱的用户，请先Refresh后再查询。', 'Chinese UI text was translated despite reduced scope');
+    assert(initial.toggleText === 'USD', 'Toggle did not start in USD mode');
+    assert(initial.toggleAfterHome, 'Toggle was not inserted beside the Home nav item');
+    assert(!initial.toggleFallback, 'Toggle used fallback placement even though Home exists');
+    assert(Math.abs(initial.toggleTop - initial.homeTop) <= 8, 'Toggle is not aligned with the top navigation');
+    assert(!initial.hasInlineTime, 'Removed inline time helper still exists');
+    assert(!initial.hasLogHelper, 'Removed log helper still exists');
+    assert(!initial.hasLogRefresh, 'Removed log refresh helper still exists');
+    assert(!initial.hasDashboardBadge, 'Removed dashboard token badge still exists');
+    assert(!initial.hasModelFilter, 'Removed model filter artifacts still exist');
+    assert(initial.hiddenClassCount === 0, 'Hidden-by-model-filter class was not cleaned');
+    assert(initial.logStorage === null, 'Log auto-refresh storage key was not removed');
+    assert(initial.modelStorage === null, 'Model filter storage key was not removed');
+    assert(initial.chats === JSON.stringify([{ Other: 'other' }]), 'Chat storage was unexpectedly normalized');
+    assert(initial.tableOrder === 'B,A', 'Table rows were sorted even though table sorting was removed');
+    assert(!initial.headerSortBound, 'Table sort binding attribute was not cleaned');
+    assert(initial.headerAriaSort === null, 'Table aria-sort was not cleaned');
+    assert(initial.headerTitle === null, 'Old table-sort title was not cleaned');
+    assert(!/midnight|log-refresh|dashboard-token|sort-bound/i.test(initial.helperStyle), 'Helper stylesheet still includes removed feature CSS');
     assert(initial.redeemWrap, 'Redemption compact wrapper was not marked');
-    assert(initial.importNames.includes('CC Switch'), 'CC Switch import template missing');
-    assert(initial.importNames.includes('Cherry Studio'), 'Cherry Studio import template missing');
-    assert(initial.importNames.includes('流畅阅读'), 'FluentRead import template missing');
+    assert(initial.redeemPlaceholder === 'Enter your redemption code here', 'Redemption placeholder was not normalized');
 
-    await evaluate(client, `document.querySelector('#tld-linkapi-cny-usd-time-shortcut button').click()`);
-    await delay(50);
-    const logStart = await evaluate(client, 'document.getElementById("log-start").value');
-    assert(logStart === '2026-05-09 00:00:00', 'Usage Logs 00:00 start shortcut did not set start input');
-
-    await evaluate(client, `document.querySelector('#tld-linkapi-cny-usd-log-refresh button').click()`);
-    await delay(50);
-    const refreshState = await evaluate(client, `(() => ({
-        clicks: window.__fixture.searchClicks,
-        reloads: window.__fixture.reloads,
-        pressed: document.querySelector('#tld-linkapi-cny-usd-log-refresh button').getAttribute('aria-pressed')
+    await evaluate(client, `document.getElementById('tld-linkapi-cny-usd-toggle').click()`);
+    await delay(100);
+    const cnyMode = await evaluate(client, `(() => ({
+        balance: document.getElementById('balance').textContent,
+        cost: document.getElementById('cost').textContent,
+        unit: document.getElementById('unit').textContent,
+        copyright: document.getElementById('copyright').textContent,
+        toggleText: document.getElementById('tld-linkapi-cny-usd-toggle').textContent,
+        stored: localStorage.getItem('tld-linkapi-cny-usd:enabled')
     }))()`);
-    assert(refreshState.clicks === 1, 'Auto-refresh did not click Search immediately when enabled');
-    assert(refreshState.reloads === 0, 'Auto-refresh reloaded despite a Search button being available');
-    assert(refreshState.pressed === 'true', 'Auto-refresh button did not enter pressed state');
 
-    await evaluate(client, `document.querySelector('#api-table th:nth-child(2)').click()`);
-    await delay(50);
-    const sortedAsc = await evaluate(client, `Array.from(document.querySelectorAll('#api-table tbody tr')).map((row) => row.children[1].textContent).join(',')`);
-    assert(sortedAsc === 'A,B', 'Generic table sort did not sort ascending on first click');
+    assert(cnyMode.balance === '当前余额: CNY 100.00', 'Toggle did not restore original CNY prefix amount');
+    assert(cnyMode.cost === 'Cost: 0.0123 CNY', 'Toggle did not restore original CNY suffix amount');
+    assert(cnyMode.unit === 'Price (CNY)', 'Toggle did not restore original CNY unit label');
+    assert(cnyMode.copyright === '© 2025 LinkAPI', 'Toggle did not restore original copyright text');
+    assert(cnyMode.toggleText === 'CNY', 'Toggle did not switch to CNY label');
+    assert(cnyMode.stored === 'false', 'Toggle state was not persisted');
 
-    await evaluate(client, `document.querySelector('#api-table th:nth-child(2)').click()`);
-    await delay(50);
-    const sortedDesc = await evaluate(client, `Array.from(document.querySelectorAll('#api-table tbody tr')).map((row) => row.children[1].textContent).join(',')`);
-    assert(sortedDesc === 'B,A', 'Generic table sort did not sort descending on second click');
+    await evaluate(client, `document.getElementById('tld-linkapi-cny-usd-toggle').click()`);
+    await delay(100);
+    const usdMode = await evaluate(client, `(() => ({
+        balance: document.getElementById('balance').textContent,
+        toggleText: document.getElementById('tld-linkapi-cny-usd-toggle').textContent,
+        stored: localStorage.getItem('tld-linkapi-cny-usd:enabled')
+    }))()`);
+
+    assert(usdMode.balance === '当前余额: $14.62', 'Toggle did not reconvert to USD');
+    assert(usdMode.toggleText === 'USD', 'Toggle did not switch back to USD label');
+    assert(usdMode.stored === 'true', 'USD toggle state was not persisted');
 
     await evaluate(client, `(() => {
-        const popup = document.createElement('div');
-        popup.setAttribute('role', 'menu');
-        popup.innerHTML = '<button>Asc</button><button>Desc</button><button>Hide</button>';
-        document.body.appendChild(popup);
-        document.body.appendChild(document.createElement('div')).textContent = 'trigger mutations';
+        const dynamic = document.createElement('p');
+        dynamic.id = 'dynamic-price';
+        dynamic.textContent = 'Dynamic CNY 25.00';
+        document.getElementById('dynamic-root').appendChild(dynamic);
     })()`);
     await delay(100);
-    const popupCount = await evaluate(client, `Array.from(document.querySelectorAll('[role="menu"]')).filter((node) => /Asc.*Desc.*Hide/s.test(node.textContent)).length`);
-    assert(popupCount === 0, 'Asc/Desc/Hide popup was not removed');
+    const dynamicText = await evaluate(client, `document.getElementById('dynamic-price').textContent`);
+    assert(dynamicText === 'Dynamic $3.66', 'Dynamic DOM currency value was not converted');
 
     await evaluate(client, `(() => {
-        const toggle = document.getElementById('tld-linkapi-cny-usd-toggle');
-        toggle.click();
-        const added = document.createElement('input');
-        added.setAttribute('aria-label', 'Dynamic Start Time');
-        added.value = '2026-05-09 10:30:00';
-        document.querySelector('main').appendChild(added);
+        document.getElementById('model-filter').value = 'claude';
+        document.getElementById('model-filter').dispatchEvent(new Event('change', { bubbles: true }));
+        document.getElementById('api-key').value = 'sk-new-secret-abcdefghijklmnopqrstuvwxyz';
+        document.getElementById('api-key').dispatchEvent(new Event('change', { bubbles: true }));
+        document.getElementById('prompt-field').value = 'new private prompt';
+        document.getElementById('prompt-field').dispatchEvent(new Event('change', { bubbles: true }));
+        document.getElementById('status-filter').value = 'Active';
+        document.getElementById('status-filter').dispatchEvent(new Event('change', { bubbles: true }));
     })()`);
     await delay(100);
-    const dynamicHelpers = await evaluate(client, `document.querySelectorAll('main > input[aria-label="Dynamic Start Time"] + .tld-linkapi-cny-usd-midnight-button').length`);
-    assert(dynamicHelpers === 0, 'Usage Logs dynamic input received inline midnight button');
-    const helperStillVisible = await evaluate(client, `Boolean(document.querySelector('#tld-linkapi-cny-usd-log-helper #tld-linkapi-cny-usd-time-shortcut'))`);
-    assert(helperStillVisible, 'Log helper disappeared after toggling conversion off and adding nodes');
 
-    await evaluate(client, `history.pushState({}, '', '/pricing'); document.body.innerHTML = '<main><h1>Model Square</h1></main>'; document.body.appendChild(document.getElementById('tld-linkapi-cny-usd-toggle'));`);
-    await delay(100);
-    const toggleHidden = await evaluate(client, `document.getElementById('tld-linkapi-cny-usd-toggle').hidden`);
-    assert(toggleHidden, 'Toggle did not hide on marketplace/pricing surface');
+    const persisted = await evaluate(client, `JSON.parse(localStorage.getItem('tld-linkapi-cny-usd:page-settings:v1'))[window.location.origin + window.location.pathname]`);
+    const persistedJson = JSON.stringify(persisted);
+    assert(!Object.prototype.hasOwnProperty.call(persisted, 'tableSorts'), 'tableSorts stayed in page settings');
+    assert(persistedJson.includes('claude'), 'Safe model filter setting was not persisted');
+    assert(persistedJson.includes('Active'), 'Safe select setting was not persisted');
+    assert(!persistedJson.includes('sk-new-secret'), 'Sensitive API key was persisted');
+    assert(!persistedJson.includes('new private prompt'), 'Textarea/prompt content was persisted');
+
+    await loadFixture(client, `${globalThis.__smokeOrigin}/tests/fixtures/new-ui-parity.html`);
+    const restored = await evaluate(client, `(() => ({
+        modelFilter: document.getElementById('model-filter').value,
+        statusFilter: document.getElementById('status-filter').value,
+        apiKey: document.getElementById('api-key').value,
+        prompt: document.getElementById('prompt-field').value
+    }))()`);
+
+    assert(restored.modelFilter === 'claude', 'Safe model filter setting was not restored');
+    assert(restored.statusFilter === 'Active', 'Safe select setting was not restored');
+    assert(restored.apiKey === 'sk-sensitive-1234567890abcdef', 'Sensitive API key was restored unexpectedly');
+    assert(restored.prompt === 'private prompt content', 'Textarea/prompt content was restored unexpectedly');
 }
 
-async function runDashboardAssertions(client) {
-    logDebug('dashboard assertions');
+async function runRemovedDashboardAssertions(client) {
+    logDebug('run removed dashboard assertions');
     await loadFixture(client, `${globalThis.__smokeOrigin}/tests/fixtures/dashboard-filter.html`);
-    logDebug('dashboard initial read');
-    const initial = await evaluate(client, `(() => ({
-        pathname: window.location.pathname,
-        buttons: document.querySelectorAll('[role="dialog"] .tld-linkapi-cny-usd-midnight-button').length,
-        fallback: Boolean(document.getElementById('tld-linkapi-cny-usd-time-shortcut')),
-        logHelper: Boolean(document.getElementById('tld-linkapi-cny-usd-log-helper'))
-    }))()`);
-    logDebug('dashboard initial', JSON.stringify(initial));
-    assert(initial.pathname === '/dashboard/models', 'Dashboard fixture did not run on the live dashboard route shape');
-    assert(initial.buttons >= 2, 'Dashboard custom time triggers did not receive 00:00 buttons');
-    assert(!initial.fallback, 'Dashboard rendered fallback despite visible inline shortcuts');
-    assert(!initial.logHelper, 'Dashboard was misdetected as Usage Logs because of sidebar text');
 
-    logDebug('dashboard click midnight');
-    await evaluate(client, `document.getElementById('dashboard-start-trigger').parentElement.querySelector('.tld-linkapi-cny-usd-midnight-button').click()`);
-    await delay(100);
-    logDebug('dashboard result read');
-    const dashboard = await evaluate(client, `(() => ({
-        triggerText: document.getElementById('dashboard-start-trigger').textContent.trim(),
-        hiddenValue: document.getElementById('dashboard-start-hidden').value
-    }))()`);
-    assert(dashboard.triggerText === '00:00', 'Dashboard custom trigger did not select visible midnight option');
-    assert(dashboard.hiddenValue.endsWith('00:00:00'), 'Dashboard hidden start value was not set to midnight');
+    const result = await evaluate(client, `(() => {
+        const nativeFetch = window.fetch;
+        const nativeOpen = XMLHttpRequest.prototype.open;
+        const nativeSend = XMLHttpRequest.prototype.send;
+        document.body.appendChild(document.createElement('div')).textContent = 'rerender';
+        return new Promise((resolve) => {
+            requestAnimationFrame(() => resolve({
+                fetchPatched: window.fetch !== nativeFetch,
+                xhrOpenPatched: XMLHttpRequest.prototype.open !== nativeOpen,
+                xhrSendPatched: XMLHttpRequest.prototype.send !== nativeSend,
+                dashboardBadge: Boolean(document.getElementById('tld-linkapi-cny-usd-dashboard-token-total')),
+                inlineTimeButtons: document.querySelectorAll('.tld-linkapi-cny-usd-midnight-button').length,
+                shortcut: Boolean(document.getElementById('tld-linkapi-cny-usd-time-shortcut')),
+                dialogMarked: Boolean(document.querySelector('[data-tld-linkapi-cny-usd-dashboard-filter-dialog]')),
+                rangeMarked: Boolean(document.querySelector('[data-tld-linkapi-cny-usd-quick-range-row]'))
+            }));
+        });
+    })()`, { awaitPromise: true });
 
-    await evaluate(client, `fetch('/api/data/self?start_timestamp=1778284800&end_timestamp=1778371200').then((response) => response.json())`, { awaitPromise: true });
-    await delay(150);
-    const tokenBadge = await evaluate(client, `(() => {
-        const badge = document.getElementById('tld-linkapi-cny-usd-dashboard-token-total');
-        return {
-            text: badge?.textContent.trim() || '',
-            previous: badge?.previousElementSibling?.textContent.trim() || '',
-            inHeader: Boolean(badge?.closest('header'))
-        };
-    })()`);
-    assert(tokenBadge.text === 'Tokens: 1,545,678', 'Dashboard token total was not rendered from token_used');
-    assert(tokenBadge.previous === 'Total: 24,866', 'Dashboard token total was not placed beside the chart total');
-    assert(tokenBadge.inHeader, 'Dashboard token total was not placed in the analytics header');
-
-    await evaluate(client, `fetch('/api/data/self?fixture=no-token').then((response) => response.json())`, { awaitPromise: true });
-    await delay(150);
-    const tokenBadgeRemoved = await evaluate(client, `Boolean(document.getElementById('tld-linkapi-cny-usd-dashboard-token-total'))`);
-    assert(!tokenBadgeRemoved, 'Dashboard token total stayed visible after token fields were absent');
-
-    await evaluate(client, `(() => {
-        const header = document.querySelector('[aria-label="Model analytics"] header');
-        header.children[0].textContent = '模型调用分析';
-        header.children[1].textContent = '总计：24,866';
-        header.parentElement.querySelectorAll('.row')[1].textContent = '调用次数分布';
-        header.parentElement.querySelectorAll('.row')[2].textContent = '调用趋势';
-        header.parentElement.querySelectorAll('.row')[3].textContent = '调用次数排行';
-    })()`);
-    await delay(100);
-    await evaluate(client, `fetch('/api/data/self?start_timestamp=1778284800&end_timestamp=1778371200').then((response) => response.json())`, { awaitPromise: true });
-    await delay(150);
-    const chineseTokenBadge = await evaluate(client, `(() => {
-        const badge = document.getElementById('tld-linkapi-cny-usd-dashboard-token-total');
-        return {
-            text: badge?.textContent.trim() || '',
-            previous: badge?.previousElementSibling?.textContent.trim() || ''
-        };
-    })()`);
-    assert(chineseTokenBadge.text === 'Tokens: 1,545,678', 'Dashboard token total did not attach to Chinese analytics header');
-    assert(chineseTokenBadge.previous === '总计：24,866', 'Dashboard token total was not placed beside the Chinese total');
-
-    await evaluate(client, `(() => {
-        document.querySelector('[aria-label="Model analytics"] header span').textContent = 'Total: 1';
-        document.body.appendChild(document.createElement('div')).textContent = 'retarget dashboard header';
-    })()`);
-    await delay(100);
-    const mismatchedBadge = await evaluate(client, `Boolean(document.getElementById('tld-linkapi-cny-usd-dashboard-token-total'))`);
-    assert(!mismatchedBadge, 'Dashboard token total stayed visible when request total no longer matched the payload');
+    assert(!result.fetchPatched, 'window.fetch was patched despite dashboard hooks being removed');
+    assert(!result.xhrOpenPatched, 'XMLHttpRequest.open was patched despite dashboard hooks being removed');
+    assert(!result.xhrSendPatched, 'XMLHttpRequest.send was patched despite dashboard hooks being removed');
+    assert(!result.dashboardBadge, 'Dashboard token badge was rendered despite removal');
+    assert(result.inlineTimeButtons === 0, 'Dashboard inline time buttons were rendered despite removal');
+    assert(!result.shortcut, 'Dashboard fallback time shortcut was rendered despite removal');
+    assert(!result.dialogMarked, 'Dashboard dialog was styled despite helper removal');
+    assert(!result.rangeMarked, 'Dashboard quick range row was styled despite helper removal');
 }
 
-async function runOldLayoutAssertions(client) {
-    logDebug('old layout assertions');
+async function runRemovedLogAssertions(client) {
+    logDebug('run removed log assertions');
     await loadFixture(client, `${globalThis.__smokeOrigin}/tests/fixtures/old-layout-log.html`);
-    const initial = await evaluate(client, `(() => ({
-        isLogHelper: Boolean(document.getElementById('tld-linkapi-cny-usd-log-helper')),
-        hasShortcut: Boolean(document.querySelector('#tld-linkapi-cny-usd-time-shortcut')),
-        inlineButtons: document.querySelectorAll('.tld-linkapi-cny-usd-midnight-button').length
-    }))()`);
-    assert(initial.isLogHelper, 'Old layout was not detected as a log page');
-    assert(initial.hasShortcut, 'Old layout start-time fallback was not rendered');
-    assert(initial.inlineButtons === 0, 'Old layout received inline midnight buttons');
 
-    await evaluate(client, `document.querySelector('#tld-linkapi-cny-usd-time-shortcut button').click()`);
-    await delay(50);
-    const oldStart = await evaluate(client, 'document.getElementById("old-start").value');
-    assert(oldStart === '2026-05-09 00:00:00', 'Old layout fallback did not set unlabeled start input');
+    const result = await evaluate(client, `(() => ({
+        helper: Boolean(document.getElementById('tld-linkapi-cny-usd-log-helper')),
+        refresh: Boolean(document.getElementById('tld-linkapi-cny-usd-log-refresh')),
+        shortcut: Boolean(document.getElementById('tld-linkapi-cny-usd-time-shortcut')),
+        inlineButtons: document.querySelectorAll('.tld-linkapi-cny-usd-midnight-button').length,
+        oldStart: document.getElementById('old-start').value
+    }))()`);
+
+    assert(!result.helper, 'Usage Logs helper cluster was rendered despite removal');
+    assert(!result.refresh, 'Usage Logs auto-refresh was rendered despite removal');
+    assert(!result.shortcut, 'Usage Logs time shortcut was rendered despite removal');
+    assert(result.inlineButtons === 0, 'Usage Logs inline time buttons were rendered despite removal');
+    assert(result.oldStart === '2026-05-09 11:47:32', 'Usage Logs time input was unexpectedly modified');
 }
 
 async function main() {
@@ -400,17 +448,19 @@ async function main() {
 
     try {
         ({ client, target } = await connectToPage());
-        await runNewUiAssertions(client);
-        await runDashboardAssertions(client);
-        await runOldLayoutAssertions(client);
+        await runReducedScopeAssertions(client);
+        await runRemovedDashboardAssertions(client);
+        await runRemovedLogAssertions(client);
         console.log('Smoke tests passed');
-    } finally {
-        if (client) {
-            client.close();
-        }
-
         if (target?.id) {
-            chromeFetch(`/json/close/${target.id}`).catch(() => {});
+            closeChromeTargetAfterExit(target.id);
+            target = null;
+        }
+        await delay(250);
+        process.exit(0);
+    } finally {
+        if (target?.id) {
+            await chromeFetch(`/json/close/${target.id}`).catch(() => {});
         }
 
         server.close();
@@ -421,5 +471,5 @@ async function main() {
 
 main().catch((error) => {
     console.error(error.stack || error.message || error);
-    process.exitCode = 1;
+    process.exit(1);
 });

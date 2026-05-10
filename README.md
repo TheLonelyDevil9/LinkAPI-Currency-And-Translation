@@ -1,6 +1,6 @@
-# LinkAPI Currency And Translation
+# LinkAPI Currency Helper
 
-Violentmonkey userscript for LinkAPI that converts CNY values to USD and cleans mixed Chinese UI text into English.
+Violentmonkey userscript for LinkAPI that converts visible CNY/RMB/yuan values to USD while keeping the page otherwise close to native LinkAPI behavior.
 
 ## Install
 
@@ -9,17 +9,20 @@ https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translati
 ## Features
 
 - Converts visible CNY/RMB/yuan values to USD with comma grouping, using extra decimals for nonzero sub-cent amounts.
-- Adds a floating `USD + EN` / `Original` toggle.
-- Watches dynamic page updates, including logs, modals, dashboard cards, and old/new console layouts. Helper controls continue attaching even when conversion is toggled to `Original`.
-- Cleans stable LinkAPI UI controls, labels, headings, and navigation text with a local glossary.
+- Replaces `(CNY)` and `(RMB)` labels with `(USD)`.
 - Updates `© 2025 LinkAPI` to `© 2026 LinkAPI`.
-- Adds `00:00` shortcut buttons beside safe visible time fields, including dashboard custom time controls when a supported midnight option is available.
-- Shows `Tokens: ...` beside the Model Call Analytics `Total:` value when the loaded dashboard API data includes `token_used`.
-- Keeps Usage Logs compact filter grids free of inline shortcuts and instead adds a visible `00:00 start` control beside the log helper controls, with an old-layout start-time fallback for unlabeled time fields.
-- Adds a grouped 30-second auto-refresh toggle on the Usage Logs page.
-- Keeps table sorting on direct header clicks while suppressing the new UI's Asc/Desc/Hide popup path.
-- Keeps redemption-code input/button layout compact on old and new wallet layouts.
-- Keeps LinkAPI's CC Switch, Cherry Studio, and FluentRead one-click import templates compatible with the current token page.
+- Adds a compact `USD` / `CNY` toggle for quick comparison with original LinkAPI values.
+- Watches dynamic page updates so newly rendered prices are converted while the toggle is in USD mode.
+- Persists safe route-scoped page controls such as filters, selects, and view options.
+- Avoids storing API keys, tokens, prompts, messages, redemption codes, credentials, passwords, textarea content, or other secret-like values.
+- Keeps the redemption-code input/button row compact on old and new wallet layouts.
+- Cleans stale DOM and localStorage artifacts from older helper features that were removed.
+
+## Removed Scope
+
+The script intentionally no longer translates Chinese UI text, patches `fetch`/`XMLHttpRequest`, adds dashboard token totals, adds `00:00` time shortcuts, auto-refreshes usage logs, sorts tables, suppresses LinkAPI sort menus, or repairs third-party chat import templates.
+
+If the userscript is disabled in the userscript manager, reload the LinkAPI page to return to the original site output.
 
 ## Validation
 
@@ -31,8 +34,8 @@ node tests/smoke-new-ui.mjs
 
 ## Privacy
 
-The script does not send page text, model names, logs, keys, prompts, or any other data to external services. Translation is glossary-based, limited to stable website UI elements, and runs locally in the browser. Dashboard token totals are aggregated in memory from the current `/api/data` or `/api/data/self` response; raw dashboard rows are not stored.
+The script does not send page text, model names, logs, keys, prompts, or any other data to external services. Currency conversion runs locally in the browser. Page settings persistence is localStorage-only and skips sensitive fields.
 
 ## Updates
 
-Violentmonkey can update this script through the `@updateURL` and `@downloadURL` metadata. If the script is disabled for safety, it will not run on LinkAPI pages, but you can still open the Violentmonkey dashboard and manually check for updates.
+Violentmonkey can update this script through the `@updateURL` and `@downloadURL` metadata. Every userscript behavior change must bump the metadata `@version`.
