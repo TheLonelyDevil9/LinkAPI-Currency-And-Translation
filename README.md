@@ -18,20 +18,6 @@ https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translati
 - Keeps the redemption-code input/button row compact on old and new wallet layouts.
 - Cleans stale DOM and localStorage artifacts from older helper features that were removed.
 
-## Removed Scope
-
-The script intentionally no longer translates Chinese UI text, patches `fetch`/`XMLHttpRequest`, adds dashboard token totals, adds `00:00` time shortcuts, auto-refreshes usage logs, sorts tables, suppresses LinkAPI sort menus, or repairs third-party chat import templates.
-
-If the userscript is disabled in the userscript manager, reload the LinkAPI page to return to the original site output.
-
-## Validation
-
-Tracked smoke fixtures live under `tests/fixtures/`. With the documented shared Chrome CDP instance running at `http://127.0.0.1:9222`, run:
-
-```bash
-node tests/smoke-new-ui.mjs
-```
-
 ## Privacy
 
 The script does not send page text, model names, logs, keys, prompts, or any other data to external services. Currency conversion runs locally in the browser. Page settings persistence is localStorage-only and skips sensitive fields.
