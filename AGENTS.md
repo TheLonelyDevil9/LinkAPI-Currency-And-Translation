@@ -14,5 +14,6 @@
 - Keep CC Switch, Cherry Studio, and FluentRead one-click import compatibility intact when changing token-page behavior.
 - Table sorting must be scoped to the clicked table/header. Provider multiplier sorting belongs only on the API Key Group/provider column; other headers should use normal first-click ascending, second-click descending sorting without relying on LinkAPI's Asc/Desc menu.
 - Persist page settings conservatively in localStorage: remember route-scoped filters, sort state, page controls, and toggles, but do not store API keys, tokens, prompts, messages, redemption codes, credentials, or textarea content.
+- Usage-log cost chips may split the currency mark and amount across nested text nodes, for example `¥` and `0.290984` in separate spans. Keep split-node currency conversion covered when touching the converter.
 - Before planning or editing, read `lessons.md` and apply its history-derived guardrails; do not repeat known project mistakes.
 - After completing and validating repository changes, commit and push them to the configured GitHub remote unless the user explicitly says not to.
