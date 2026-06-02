@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinkAPI USD And English
 // @namespace    https://violentmonkey.github.io/
-// @version      4.2
+// @version      4.3
 // @description  Convert LinkAPI CNY values to USD with an account-menu comparison control
 // @author       TheLonelyDevil
 // @updateURL    https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translation/main/LinkAPI%20USD%20And%20English.user.js
@@ -25,6 +25,7 @@
     const MENU_STYLE_ID = `${SCRIPT_ID}-menu-style`;
     const MENU_TOGGLE_ID = `${SCRIPT_ID}-menu-toggle`;
     const MENU_TOGGLE_CLASS = `${SCRIPT_ID}-menu-control`;
+    const SPLIT_CURRENCY_ATTR = `data-${SCRIPT_ID}-split-currency`;
     const CNY_TO_USD_RATE = 0.146201;
     const ACCOUNT_MENU_WALLET_LABELS = ['wallet', '钱包', '錢包'];
     const ACCOUNT_MENU_SIGN_OUT_LABELS = ['sign out', 'sign-out', 'log out', 'logout', '退出登录', '退出登錄', '登出'];
@@ -32,6 +33,8 @@
 
     const PREFIX_CNY_PATTERN = /(?<![\w$])(?:CNY|RMB|CN¥|CN￥|¥|￥|人民币)\s*([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)(?!\s*(?:CNY|RMB|元)?\s*\))/gi;
     const SUFFIX_CNY_PATTERN = /(?<![\w$])([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?:CNY|RMB|人民币|元)(?!\s*\))/gi;
+    const SPLIT_PREFIX_CNY_PATTERN = /^(?:CNY|RMB|CN¥|CN￥|¥|￥|人民币)\s*([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)$/i;
+    const SPLIT_SUFFIX_CNY_PATTERN = /^([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?:CNY|RMB|人民币|元)$/i;
     const CNY_UNIT_LABEL_PATTERN = /\((?:CNY|RMB)\)/gi;
     const COPYRIGHT_YEAR_PATTERN = /©\s*2025(?=\s*LinkAPI)/g;
     const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'INPUT', 'SELECT', 'OPTION', 'CODE', 'PRE']);
@@ -114,6 +117,117 @@
         }
     }
 
+    function getSplitCurrencyAmount(text) {
+        const normalizedText = normalizeWhitespace(text);
+        const prefixMatch = normalizedText.match(SPLIT_PREFIX_CNY_PATTERN);
+        if (prefixMatch) {
+            return prefixMatch[1];
+        }
+
+        const suffixMatch = normalizedText.match(SPLIT_SUFFIX_CNY_PATTERN);
+        return suffixMatch ? suffixMatch[1] : '';
+    }
+
+    function collectElements(root) {
+        if (!root || root.nodeType === Node.TEXT_NODE) {
+            return [];
+        }
+
+        const elements = [];
+        if (root.nodeType === Node.ELEMENT_NODE) {
+            elements.push(root);
+        }
+
+        if (typeof root.querySelectorAll === 'function') {
+            elements.push(...root.querySelectorAll('*'));
+        }
+
+        return elements;
+    }
+
+    function collectMeaningfulTextNodes(element) {
+        const ownerDocument = element.ownerDocument || document;
+        const walker = ownerDocument.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+        const textNodes = [];
+        let node;
+        while ((node = walker.nextNode())) {
+            if (normalizeWhitespace(node.textContent)) {
+                textNodes.push(node);
+            }
+        }
+
+        return textNodes;
+    }
+
+    function shouldSkipSplitCurrencyElement(element) {
+        return SKIP_TAGS.has(element.tagName)
+            || Boolean(element.closest(`#${SCRIPT_ID}-toggle, .${SCRIPT_ID}-control, #${MENU_TOGGLE_ID}, .${MENU_TOGGLE_CLASS}`));
+    }
+
+    function isSplitCurrencyCandidate(element) {
+        if (element.getAttribute(SPLIT_CURRENCY_ATTR) === 'true' || shouldSkipSplitCurrencyElement(element)) {
+            return false;
+        }
+
+        const textNodes = collectMeaningfulTextNodes(element);
+        if (textNodes.length < 2) {
+            return false;
+        }
+
+        return Boolean(getSplitCurrencyAmount(element.textContent));
+    }
+
+    function convertSplitCurrencyElement(element) {
+        const rawAmount = getSplitCurrencyAmount(element.textContent);
+        const cnyValue = rawAmount ? toNumber(rawAmount) : NaN;
+        if (!Number.isFinite(cnyValue)) {
+            return;
+        }
+
+        const textNodes = collectMeaningfulTextNodes(element);
+        if (textNodes.length < 2) {
+            return;
+        }
+
+        element.__tldLinkApiOriginalSplitCurrencyNodes = textNodes.map((node) => ({
+            node,
+            text: node.textContent
+        }));
+        element.setAttribute(SPLIT_CURRENCY_ATTR, 'true');
+        textNodes.forEach((node, index) => {
+            node.textContent = index === 0 ? formatUsd(cnyValue) : '';
+        });
+    }
+
+    function restoreSplitCurrencyElement(element) {
+        const originalNodes = element.__tldLinkApiOriginalSplitCurrencyNodes;
+        if (Array.isArray(originalNodes)) {
+            originalNodes.forEach(({ node, text }) => {
+                if (node?.parentNode) {
+                    node.textContent = text;
+                }
+            });
+        }
+
+        delete element.__tldLinkApiOriginalSplitCurrencyNodes;
+        element.removeAttribute(SPLIT_CURRENCY_ATTR);
+    }
+
+    function processSplitCurrencyElements(root) {
+        const elements = collectElements(root);
+        if (!enabled) {
+            elements
+                .filter((element) => element.getAttribute(SPLIT_CURRENCY_ATTR) === 'true')
+                .forEach(restoreSplitCurrencyElement);
+            return;
+        }
+
+        const candidates = elements.filter(isSplitCurrencyCandidate);
+        candidates
+            .filter((candidate) => !candidates.some((other) => other !== candidate && candidate.contains(other)))
+            .forEach(convertSplitCurrencyElement);
+    }
+
     function walkTextNodes(root, visitor) {
         if (!root) {
             return;
@@ -151,6 +265,7 @@
         }
 
         walkTextNodes(root, enabled ? processTextNode : restoreTextNode);
+        processSplitCurrencyElements(root);
     }
 
     function processAccessibleFrames() {

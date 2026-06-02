@@ -262,6 +262,8 @@ async function runReducedScopeAssertions(client) {
     const initial = await evaluate(client, `(() => ({
         balance: document.getElementById('balance').textContent,
         cost: document.getElementById('cost').textContent,
+        splitCost: document.getElementById('split-cost').textContent,
+        splitCostPill: document.getElementById('split-cost-pill').textContent,
         yuan: document.getElementById('yuan').textContent,
         unit: document.getElementById('unit').textContent,
         copyright: document.getElementById('copyright').textContent,
@@ -294,6 +296,8 @@ async function runReducedScopeAssertions(client) {
 
     assert(initial.balance === '当前余额: $14.62', 'CNY prefix amount was not converted to USD');
     assert(initial.cost === 'Cost: $0.001798', 'Tiny suffix CNY amount was not converted with extra precision');
+    assert(initial.splitCost === 'Split Cost: $0.04', 'Split prefix CNY amount was not converted to USD');
+    assert(initial.splitCostPill === '$0.04', 'Split prefix CNY pill did not keep the conversion scoped');
     assert(initial.yuan === '充值金额 $1.75', 'Yuan suffix amount was not converted');
     assert(initial.unit === 'Price (USD)', 'CNY unit label was not converted');
     assert(initial.copyright === '© 2026 LinkAPI', 'Copyright year was not updated');
@@ -328,6 +332,7 @@ async function runReducedScopeAssertions(client) {
     const cnyMode = await evaluate(client, `(() => ({
         balance: document.getElementById('balance').textContent,
         cost: document.getElementById('cost').textContent,
+        splitCost: document.getElementById('split-cost').textContent,
         unit: document.getElementById('unit').textContent,
         copyright: document.getElementById('copyright').textContent,
         menuToggleText: document.getElementById('tld-linkapi-cny-usd-menu-toggle').textContent,
@@ -338,6 +343,7 @@ async function runReducedScopeAssertions(client) {
 
     assert(cnyMode.balance === '当前余额: CNY 100.00', 'Toggle did not restore original CNY prefix amount');
     assert(cnyMode.cost === 'Cost: 0.0123 CNY', 'Toggle did not restore original CNY suffix amount');
+    assert(cnyMode.splitCost === 'Split Cost: ¥0.290984', 'Toggle did not restore split prefix CNY amount');
     assert(cnyMode.unit === 'Price (CNY)', 'Toggle did not restore original CNY unit label');
     assert(cnyMode.copyright === '© 2025 LinkAPI', 'Toggle did not restore original copyright text');
     assert(cnyMode.menuToggleText === 'Show USD values', 'Menu toggle label changed outside stable preference text');
@@ -364,10 +370,17 @@ async function runReducedScopeAssertions(client) {
         dynamic.id = 'dynamic-price';
         dynamic.textContent = 'Dynamic CNY 25.00';
         document.getElementById('dynamic-root').appendChild(dynamic);
+
+        const dynamicSplit = document.createElement('p');
+        dynamicSplit.id = 'dynamic-split-price';
+        dynamicSplit.innerHTML = 'Dynamic Split <span><span>¥</span><span>25.00</span></span>';
+        document.getElementById('dynamic-root').appendChild(dynamicSplit);
     })()`);
     await delay(100);
     const dynamicText = await evaluate(client, `document.getElementById('dynamic-price').textContent`);
+    const dynamicSplitText = await evaluate(client, `document.getElementById('dynamic-split-price').textContent`);
     assert(dynamicText === 'Dynamic $3.66', 'Dynamic DOM currency value was not converted');
+    assert(dynamicSplitText === 'Dynamic Split $3.66', 'Dynamic split DOM currency value was not converted');
 
     await evaluate(client, `(() => {
         document.getElementById('model-filter').value = 'claude';
