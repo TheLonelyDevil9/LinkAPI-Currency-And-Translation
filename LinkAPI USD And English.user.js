@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinkAPI USD And English
 // @namespace    https://violentmonkey.github.io/
-// @version      6.0
+// @version      6.1
 // @description  Convert LinkAPI CNY values to target currency (defaults to local) with a live rate, an account-menu comparison control, models.dev comparison, automatic VAT, and a floating currency widget
 // @author       TheLonelyDevil
 // @updateURL    https://raw.githubusercontent.com/TheLonelyDevil9/LinkAPI-Currency-And-Translation/main/LinkAPI%20USD%20And%20English.user.js
@@ -169,10 +169,25 @@
         return new Intl.NumberFormat(locale, options).format(value);
     }
 
+    function subCentFractionDigits(value) {
+        const absValue = Math.abs(value);
+        return absValue > 0 && absValue < 0.01
+            ? Math.min(Math.max(Math.ceil(-Math.log10(absValue)) + 2, 6), 8)
+            : 2;
+    }
+
     function formatTargetCurrency(cnyValue, applyVat = false) {
-        const res = convertCnyToTarget(cnyValue, applyVat, false); // Stable!
         const hasVat = applyVat && vatRate > 0;
-        return hasVat ? `${res.formatted} (incl. ${Math.round(vatRate * 100)}% VAT)` : res.formatted;
+        if (hasVat) {
+            // Payable amount: keep the payment-rate conversion plus VAT.
+            const res = convertCnyToTarget(cnyValue, true, false); // Stable!
+            return `${res.formatted} (incl. ${Math.round(vatRate * 100)}% VAT)`;
+        }
+
+        // Informational amount (balance, usage, cost): clean mid-market rate,
+        // consistent with the profile/dashboard cards.
+        const clean = convertCnyToTargetClean(cnyValue);
+        return formatCurrency(clean.value, clean.currency, subCentFractionDigits(clean.value));
     }
 
     function normalizeWhitespace(text) {
@@ -200,8 +215,15 @@
                 return match;
             }
 
-            const target = convertUsdToTarget(usdValue, applyVat);
-            return applyVat && vatRate > 0 ? `${target.formatted} (incl. ${Math.round(vatRate * 100)}% VAT)` : target.formatted;
+            if (applyVat && vatRate > 0) {
+                // Payable amount: payment-rate conversion plus VAT.
+                const target = convertUsdToTarget(usdValue, true);
+                return `${target.formatted} (incl. ${Math.round(vatRate * 100)}% VAT)`;
+            }
+
+            // Informational amount: clean mid-market rate.
+            const clean = convertUsdToTargetClean(usdValue);
+            return formatCurrency(clean.value, clean.currency, subCentFractionDigits(clean.value));
         };
 
         return String(text || '')
@@ -2736,11 +2758,25 @@
         const CNY_RE = /[¥￥]\s*([0-9]+(?:[,.][0-9]+)?)/;
 
         function convertElement(el) {
-            if (el.classList.contains(DASH_CLASS)) {
+            if (el.__tldOriginalDashText === undefined) {
+                const text = el.textContent || '';
+                if (!CNY_RE.test(text)) {
+                    return;
+                }
+                el.__tldOriginalDashText = text;
+                // Permanent marker: keeps the generic text-path converter away
+                // from elements this enhancer owns.
+                el.classList.add(DASH_CLASS);
+            }
+
+            if (!enabled) {
+                if (el.textContent !== el.__tldOriginalDashText) {
+                    el.textContent = el.__tldOriginalDashText;
+                }
                 return;
             }
-            const text = el.textContent || '';
-            const match = text.match(CNY_RE);
+
+            const match = el.__tldOriginalDashText.match(CNY_RE);
             if (!match) {
                 return;
             }
@@ -2749,8 +2785,9 @@
                 return;
             }
             const converted = convertCnyToTargetClean(cnyValue);
-            el.textContent = converted.formatted;
-            el.classList.add(DASH_CLASS);
+            if (el.textContent !== converted.formatted) {
+                el.textContent = converted.formatted;
+            }
         }
 
         // Dashboard stats bar: Current Balance, Total Usage (may be inside profile card)
@@ -3033,7 +3070,7 @@
                     if (Number.isFinite(usdValue) && usdValue > 0) {
                         const usdWithVat = usdValue * (1 + vatRate);
                         const formattedUsd = formatCurrency(usdWithVat, 'USD');
-                        const badgeHtml = `<span style="display: inline-inline-block; font-size: 11px; font-weight: 500; line-height: 1.2; padding: 3px 6px; border-radius: 6px; background: rgba(45, 212, 191, 0.12); color: rgb(45, 212, 191); border: 1px solid rgba(45, 212, 191, 0.25); margin-left: 6px; vertical-align: middle;">incl. ${Math.round(vatRate * 100)}% VAT</span>`;
+                        const badgeHtml = `<span style="display: inline-block; font-size: 11px; font-weight: 500; line-height: 1.2; padding: 3px 6px; border-radius: 6px; background: rgba(45, 212, 191, 0.12); color: rgb(45, 212, 191); border: 1px solid rgba(45, 212, 191, 0.25); margin-left: 6px; vertical-align: middle;">incl. ${Math.round(vatRate * 100)}% VAT</span>`;
 
                         const targetCurr = getTargetCurrency();
                         if (targetCurr !== 'USD') {
@@ -3110,7 +3147,7 @@
                         if (Number.isFinite(usdValue) && usdValue > 0) {
                             const usdWithVat = usdValue * (1 + vatRate);
                             const formattedUsd = formatCurrency(usdWithVat, 'USD');
-                            const badgeHtml = `<span style="display: inline-inline-block; font-size: 11px; font-weight: 500; line-height: 1.2; padding: 3px 6px; border-radius: 6px; background: rgba(45, 212, 191, 0.12); color: rgb(45, 212, 191); border: 1px solid rgba(45, 212, 191, 0.25); margin-left: 6px; vertical-align: middle;">incl. ${Math.round(vatRate * 100)}% VAT</span>`;
+                            const badgeHtml = `<span style="display: inline-block; font-size: 11px; font-weight: 500; line-height: 1.2; padding: 3px 6px; border-radius: 6px; background: rgba(45, 212, 191, 0.12); color: rgb(45, 212, 191); border: 1px solid rgba(45, 212, 191, 0.25); margin-left: 6px; vertical-align: middle;">incl. ${Math.round(vatRate * 100)}% VAT</span>`;
 
                             const targetCurr = getTargetCurrency();
                             if (targetCurr !== 'USD') {
